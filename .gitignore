@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv/
+venv/
+ENV/
+env.bak/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
+
+# Chrome Extension
+*.zip
+node_modules/
+dist/
+*.crx
+
+# VSCode
+.vscode/
+
+# secret files
+*.env
+secrets.json
+
+# PyInstaller
+build/
+dist/
+*.spec
