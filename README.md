@@ -5,8 +5,11 @@
 
 # Briefly ⚡️ 
 
-Right-click any YouTube link → instantly **copy its transcript** *or* launch a
-ready-made **Gemini** summarisation in Google AI Studio.
+Summarize YouTube videos instantly — right from your browser.
+
+Skip the video, keep the value. With one right-click, Briefly pulls the transcript and auto-summarizes it using Google’s Gemini in AI Studio. Perfect for research, note-taking, or just staying informed — without the watch time.
+
+
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 
