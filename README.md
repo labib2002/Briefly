@@ -1,15 +1,12 @@
-
 <p align="center">
   <img src="icons/briefly-128.png" alt="Briefly logo" width="128">
 </p>
 
-# Briefly ⚡️ 
+# Briefly ⚡️
 
 Summarize YouTube videos instantly — right from your browser.
 
-Skip the video, keep the value. With one right-click, Briefly pulls the transcript and auto-summarizes it using Google’s Gemini in AI Studio. Perfect for research, note-taking, or just staying informed — without the watch time.
-
-
+Skip the video, keep the value. With one right-click or through the extension popup, Briefly pulls the transcript for the current YouTube video. It can copy the transcript to your clipboard or auto-summarize it using Google’s Gemini in AI Studio. Perfect for research, note-taking, or just staying informed — without the watch time.
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 
@@ -19,13 +16,15 @@ Skip the video, keep the value. With one right-click, Briefly pulls the transcri
 
 | Action | What happens |
 | ------ | ------------ |
-| **Get & Copy Transcript** | Calls a tiny local Flask API → fetches the full transcript (with retries) → copies it to your clipboard via Chrome’s Offscreen API. |
-| **Summarise in AI Studio** | Same fetch → opens `aistudio.google.com` → pastes a terse-but-complete prompt + transcript → selects <br> *Gemini Flash* → disables “Thinking mode” → clicks **Run**. |
+| **Get & Copy Transcript** | Uses a bundled JavaScript library (based on `youtube-transcript-api`) directly in the extension → fetches the full transcript (with preferred language logic) → copies it to your clipboard via Chrome’s Offscreen API. |
+| **Summarise in AI Studio** | Same transcript fetching method → opens `aistudio.google.com` → pastes a pre-defined prompt + transcript → attempts to selects preferred model → disables/enables preferred “Thinking mode” → clicks **Run**. |
+
 ---
 
-| Feature | info         | 
-| ------  | ------------ | 
-| **Robust notifications** | API / network / automation errors bubble up clearly. | 
+| Feature | info         |
+| ------  | ------------ |
+| **Popup Interface** | Access core actions (copy, summarize) for the active YouTube tab directly from the extension icon. |
+| **Robust notifications** | API / network / automation errors bubble up clearly. |
 | **Cross-platform** | works on Chrome, Edge, Brave, etc. (Manifest v3). |
 
 ---
@@ -39,43 +38,35 @@ git clone https://github.com/labib2002/briefly.git
 cd briefly
 ```
 
-### 2 ▪ Run the local API
+### 2 ▪ Load the extension
 
-```bash
-python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python transcript-API.py                          # http://127.0.0.1:5678
-```
-
-### 3 ▪ Load the extension
-
-1. Open `chrome://extensions`
-2. Turn on **Developer mode**
-3. Click **Load unpacked** → select the project folder (`manifest.json` lives here)
+1. Open `chrome://extensions` (or the equivalent for your browser, e.g., `edge://extensions`).
+2. Turn on **Developer mode**.
+3. Click **Load unpacked** → select the `briefly` project folder (the one containing `manifest.json`).
 
 ---
 
 ## Usage
 
-1. Keep the Flask window running.
-
-2. Right-click any YouTube link → choose:
-
-   * **Get & Copy Transcript Text**
-   * **Automate Summary in AI Studio**
-
-3. Read the notification; if you picked AI Studio, switch to the new tab and
-   watch Gemini work its magic.
+1.  Navigate to a YouTube video page (`youtube.com/watch?...`, `youtu.be/...`, `youtube.com/shorts/...`).
+2.  **Option 1: Context Menu**
+    *   Right-click any YouTube video link on a webpage.
+    *   Choose:
+        *   **Briefly: Get & Copy Transcript Text**
+        *   **Briefly: Automate Summary in AI Studio**
+3.  **Option 2: Extension Popup**
+    *   While on a YouTube video page, click the Briefly extension icon in your browser toolbar.
+    *   Click either **Copy Transcript** or **Summarize in AI Studio**.
+4.  Read the notification that appears. If you picked AI Studio, switch to the new tab and watch Gemini work its magic.
 
 ---
 
 ## Configuration
 
-| File                             | What to tweak                                |
-| -------------------------------- | -------------------------------------------- |
-| **`transcript-API.py`**          | `preferred_langs`, retry counts, port number |
-| **`background.js`**              | `promptText` template, AI Studio time-outs   |
-| **`content_script_aistudio.js`** | CSS selectors & default model name           |
+| File                             | What to tweak                                                                 |
+| -------------------------------- | ----------------------------------------------------------------------------- |
+| **`background.js`**              | `PREFERRED_LANGUAGES` array, `promptText` template for AI Studio, AI Studio automation time-outs. |
+| **`content_script_aistudio.js`** | CSS selectors for AI Studio elements & default model name string (e.g., "Gemini 2.5 Flash Preview"). |
 
 ---
 
@@ -83,30 +74,29 @@ python transcript-API.py                          # http://127.0.0.1:5678
 
 | Symptom                                                | Likely cause / fix                                                                                              |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| **“Could not connect to the local transcript server”** | Flask not running, firewall blocking `127.0.0.1:5678`, or you changed the port without updating the extension.  |
-| **Transcript unavailable**                             | Uploader disabled transcripts or none in your preferred languages.                                              |
-| **Automation stalls in AI Studio**                     | Google’s UI changed – adjust selectors in `content_script_aistudio.js`. Use DevTools console to inspect errors. |
+| **Transcript unavailable / error fetching transcript** | Uploader disabled transcripts, no transcripts in your `PREFERRED_LANGUAGES` (see `background.js`), or a temporary YouTube issue. Check the Service Worker console. |
+| **Automation stalls or fails in AI Studio**            | Google’s AI Studio UI might have changed – adjust selectors in `content_script_aistudio.js`. Use DevTools console in the AI Studio tab to inspect errors. The target model ("Gemini 2.5 Flash Preview") might also be unavailable or renamed. |
 | **Clipboard error**                                    | Rare; open the extension’s *Service worker* console in `chrome://extensions` for details.                       |
+| **Buttons in popup are disabled**                      | Ensure you are on an active YouTube video page (`youtube.com/watch`, `youtu.be`, `youtube.com/shorts`).        |
 
 ---
 
-* **Service worker logs** → `chrome://extensions` → *Service worker*.
-* **Content-script logs** → DevTools console in the AI Studio tab.
-* **API logs** → the terminal running `transcript-API.py`.
-
+* **Service worker logs (for background tasks, transcript fetching)** → `chrome://extensions` → find Briefly → click *Service worker*.
+* **Content-script logs (for AI Studio automation)** → Open DevTools (F12) console in the AI Studio tab.
+* **Popup logs (for popup UI issues)** → Right-click the extension icon → *Inspect popup* → Console tab.
 
 ---
 
 ## Roadmap / Future Ideas
 
-* [ ] **Direct Gemini API** – call Google’s public Gemini API (or Vertex AI) instead of driving the browser.
-* [ ] **Popup / Options UI** – set preferred languages, edit the prompt, choose models, toggle features.
-* [ ] **Summarise current video** – one-click action that grabs the tab’s video ID (no right-click).
-* [ ] **All in one application** – an easier flow to get this entire app running without servers, extensions, etc..
-* [ ] **Local LLM support** – send transcripts to an Ollama / GGUF model for offline summaries.
-* [ ] **Internationalisation** – translate extension text & prompts.
-* [ ] **Summarization switches / profiles** – Ability to switch between short summary and detailed summary.
-
+* [ ] **Direct Gemini API Integration** – Add option for Google’s public Gemini API (or Vertex AI) directly, bypassing AI Studio UI automation for a faster and more reliable summarization.
+* [ ] **Enhanced Popup / Options UI** – Allow users to customize preferred languages, edit the AI Studio prompt, select different summarization models, and toggle other features through a dedicated options page or an enhanced popup.
+* [X] **Process Current Video via Popup** – One-click actions in the extension popup to process the video in the active tab (Implemented in v1.4).
+* [ ] **Standalone Application** – Package Briefly as a desktop application, removing the need for a browser extension (e.g., using Electron or similar).
+* [ ] **Local LLM Support** – Send transcripts to a locally running LLM (e.g., via Ollama / GGUF models) for offline summaries.
+* [ ] **Internationalisation (i18n)** – Translate extension UI text and default prompts into multiple languages.
+* [ ] **Customizable Summarization Profiles** – Allow users to define and switch between different summarization styles or lengths (e.g., "brief overview," "detailed points," "key takeaways").
+* [ ] **Support for more video platforms** – Extend transcript and summarization capabilities to other platforms beyond YouTube.
 
 *Pull-requests welcome – open an issue first so we don’t duplicate work!*
 
@@ -123,5 +113,5 @@ python transcript-API.py                          # http://127.0.0.1:5678
 
 Released under the **MIT License** – see [`LICENSE.md`](LICENSE.md).
 
-> Built on top of the amazing
-> [`youtube-transcript-api`](https://github.com/jdepoix/youtube-transcript-api).
+> The core logic for fetching YouTube transcripts is derived from the excellent
+[youtube-transcript-api](https://pypi.org/project/youtube-transcript-api/) Py library, adapted for direct use within the browser extension.

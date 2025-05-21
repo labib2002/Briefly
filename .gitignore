@@ -19,6 +19,7 @@ Thumbs.db
 
 # Chrome Extension
 *.zip
+*.7z
 node_modules/
 dist/
 *.crx
@@ -34,3 +35,6 @@ secrets.json
 build/
 dist/
 *.spec
+
+# Deprecated
+deprecated-*.py
