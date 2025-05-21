@@ -15,9 +15,8 @@
     "default_title": "Briefly — Instant YouTube Summaries",
     "default_popup": "popup.html"
   },
-
-  "version": "1.3",
-  "description": "Adds context menu items for YouTube video links to process transcripts via local API and attempts to automate AI Studio.",
+  "version": "1.4",
+  "description": "Adds context menu items for YouTube video links to process transcripts and attempts to automate AI Studio using a JS library.",
   "permissions": [
     "contextMenus",
     "tabs",
@@ -28,10 +27,11 @@
   ],
   "host_permissions": [
      "*://*.youtube.com/*",
-     "http://127.0.0.1/*",
+     "*://youtu.be/*",
      "*://aistudio.google.com/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   }
 }

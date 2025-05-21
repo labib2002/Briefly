@@ -1,20 +1,30 @@
-<!-- popup.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>Briefly</title>
   <link rel="stylesheet" href="popup.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="container">
-    <img src="icons/briefly-128.png" alt="Briefly Logo" class="logo">
-    <h2 class="title">Briefly</h2>
+    <header class="header">
+      <img src="icons/briefly-128.png" alt="Briefly Logo" class="logo">
+      <h1 class="title">Briefly</h1>
+    </header>
     <p class="tagline">Instant YouTube transcript & summaries for the active tab.</p>
+
     <div class="button-group">
-      <button id="copyTranscriptBtn">Copy Transcript</button>
-      <button id="summarizeStudioBtn">Summarize in AI Studio</button>
+      <button id="copyTranscriptBtn">
+        <span>Copy Transcript</span>
+      </button>
+      <button id="summarizeStudioBtn">
+        <span>Summarize in AI Studio</span>
+      </button>
     </div>
+
     <p id="statusMessage" class="status-message"></p>
   </div>
   <script src="popup.js"></script>
