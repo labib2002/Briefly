@@ -23,7 +23,9 @@
     "clipboardWrite",
     "offscreen",
     "notifications",
-    "scripting"
+    "scripting",
+    "declarativeNetRequest",                
+    "declarativeNetRequestWithHostAccess"   
   ],
   "host_permissions": [
      "*://*.youtube.com/*",
@@ -33,5 +35,14 @@
   "background": {
     "service_worker": "background.js",
     "type": "module"
+  },
+  "declarative_net_request": {               
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
   }
 }
