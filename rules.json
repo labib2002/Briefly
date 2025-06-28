@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://www.youtube.com"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||youtube.com/youtubei/v1/*",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]
