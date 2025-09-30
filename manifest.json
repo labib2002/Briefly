@@ -1,6 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Briefly",
+  "version": "1.5.0",
+  "description": "Instant YouTube transcripts & summaries. Copies transcripts and can summarize in Google AI Studio.",
   "icons": {
     "16": "icons/briefly-16.png",
     "48": "icons/briefly-48.png",
@@ -15,28 +17,33 @@
     "default_title": "Briefly — Instant YouTube Summaries",
     "default_popup": "popup.html"
   },
-  "version": "1.4",
-  "description": "Adds context menu items for YouTube video links to process transcripts and attempts to automate AI Studio using a JS library.",
   "permissions": [
-    "contextMenus",
     "tabs",
-    "clipboardWrite",
-    "offscreen",
-    "notifications",
     "scripting",
-    "declarativeNetRequest",                
-    "declarativeNetRequestWithHostAccess"   
+    "storage",
+    "clipboardWrite",
+    "notifications",
+    "offscreen",
+    "identity",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
-     "*://*.youtube.com/*",
-     "*://youtu.be/*",
-     "*://aistudio.google.com/*"
+    "https://*.youtube.com/*",
+    "https://youtu.be/*",
+    "https://aistudio.google.com/*",
+    "https://www.googleapis.com/*"
   ],
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-  "declarative_net_request": {               
+  "oauth2": {
+    "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/youtube.force-ssl"
+    ]
+  },
+  "declarative_net_request": {
     "rule_resources": [
       {
         "id": "ruleset_1",

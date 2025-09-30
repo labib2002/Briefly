@@ -1,192 +1,266 @@
-// Import the new library and the core Innertube class
-import Innertube, { YTNodes } from './node_modules/youtubei.js/bundle/browser.js';
+// Briefly — Background (MV3 Service Worker)
 
-// --- Core Setup ---
 const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
-let creatingOffscreenDocumentPromise = null;
-let yt;
 
-// Initialize the YouTube API client on startup
-(async () => {
-    try {
-        yt = await Innertube.create({
-            generate_session_locally: true,
-            lang: 'en',
-            fetch: self.fetch.bind(self)
-        });
-        console.log("Briefly: YouTube API client initialized successfully.");
-    } catch (error) {
-        console.error("Briefly: Failed to initialize YouTube API client.", error);
-    }
-})();
+// ---------------- Clipboard via Offscreen ----------------
 
-// --- Offscreen API for Clipboard (Unchanged) ---
-async function copyToClipboardViaOffscreen(textToCopy) {
-    if (typeof textToCopy !== 'string') {
-        chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Clipboard Error', message: 'Invalid data for copying.' });
-        return false;
-    }
-    await setupOffscreenDocument(OFFSCREEN_DOCUMENT_PATH);
-    const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'copy-to-clipboard', data: textToCopy });
-    if (response && response.success) return true;
-    chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Copy Failed', message: `Could not copy: ${response?.error || 'Unknown reason'}` });
-    return false;
-}
+let creatingOffscreen;
 
 async function setupOffscreenDocument(path) {
-    const offscreenUrl = chrome.runtime.getURL(path);
-    if (await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [offscreenUrl] }).then(contexts => contexts.length > 0)) {
-        return;
-    }
-    if (creatingOffscreenDocumentPromise) {
-        await creatingOffscreenDocumentPromise;
-    } else {
-        creatingOffscreenDocumentPromise = chrome.offscreen.createDocument({ url: path, reasons: [chrome.offscreen.Reason.CLIPBOARD], justification: 'Needed to write text to the clipboard.' });
-        try {
-            await creatingOffscreenDocumentPromise;
-        } finally {
-            creatingOffscreenDocumentPromise = null;
-        }
-    }
+  const url = chrome.runtime.getURL(path);
+  const existing = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
+    documentUrls: [url]
+  });
+  if (existing.length) return;
+
+  if (!creatingOffscreen) {
+    creatingOffscreen = chrome.offscreen.createDocument({
+      url: path,
+      reasons: [chrome.offscreen.Reason.CLIPBOARD],
+      justification: 'Write to clipboard from service worker'
+    });
+  }
+  await creatingOffscreen;
+  creatingOffscreen = null;
 }
 
-// --- New API-Driven Transcript Logic ---
+async function ensureOffscreenReady() {
+  await setupOffscreenDocument(OFFSCREEN_DOCUMENT_PATH);
+  for (let i = 0; i < 10; i++) {
+    try {
+      const pong = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ping' });
+      if (pong?.ready) return;
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 50));
+  }
+}
+
+async function copyToClipboardViaOffscreen(textToCopy) {
+  if (typeof textToCopy !== 'string') {
+    chrome.notifications.create({
+      type: 'basic', iconUrl: 'icons/briefly-48.png',
+      title: 'Clipboard Error', message: 'Invalid data for copying.'
+    });
+    return false;
+  }
+
+  await ensureOffscreenReady();
+
+  const trySend = async () => {
+    try {
+      return await chrome.runtime.sendMessage({
+        target: 'offscreen', type: 'copy-to-clipboard', data: textToCopy
+      });
+    } catch (e) {
+      return { success: false, error: e?.message || 'sendMessage failed' };
+    }
+  };
+
+  let response = await trySend();
+
+  if (!response || response.success !== true) {
+    await new Promise(r => setTimeout(r, 120));
+    response = await trySend();
+  }
+
+  if (response && response.success) return true;
+
+  chrome.notifications.create({
+    type: 'basic', iconUrl: 'icons/briefly-48.png',
+    title: 'Copy Failed', message: `Could not copy: ${response?.error || 'Unknown reason'}`
+  });
+  return false;
+}
+
+// ---------------- Helpers ----------------
 
 function getYouTubeVideoId(url) {
-  if (!url) return null;
   try {
     const u = new URL(url);
-    const v = u.searchParams.get('v');
-    if (v) return v;                           // https://www.youtube.com/watch?v=ID
-
-    if (u.hostname.endsWith('youtu.be')) {     // https://youtu.be/ID
-      return u.pathname.slice(1);
-    }
-
-    const m = u.pathname.match(/^\/(?:shorts|embed)\/([A-Za-z0-9_-]{6,})/); // shorts/embed
-    if (m) return m[1];
-  } catch (e) {
-    console.error("Error parsing URL for Video ID:", url, e);
-  }
+    if (u.hostname.endsWith('youtu.be')) return u.pathname.slice(1).split('?')[0];
+    if (u.searchParams.has('v')) return u.searchParams.get('v');
+    const m = u.pathname.match(/\/(shorts|embed)\/([^/?#]+)/);
+    if (m) return m[2];
+  } catch {}
   return null;
 }
 
-/**
- * FINAL CORRECTED LOGIC.
- * This mimics the logic from the Python innertube library's get_transcript example.
- * 1. Call /next to get page data.
- * 2. Find the transcript engagement panel and extract the 'params' for the transcript.
- * 3. Call /get_transcript with those specific params.
- * @param {string} videoId
- * @returns {Promise<{status: string, transcript?: string, message?: string}>}
- */
-async function fetchTranscriptWithApi(videoId) {
-  if (!yt) {
-    return { status: "error", message: "YouTube API client is not initialized." };
+function vttToPlainText(vtt) {
+  const lines = vtt.split(/\r?\n/);
+  const out = [];
+  let currentText = '';
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) {
+        if(currentText) out.push(currentText);
+        currentText = '';
+        continue;
+    };
+    if (/^WEBVTT/i.test(line) || /^(NOTE|STYLE|REGION)/i.test(line) || /^\d+$/.test(line) || /-->/.test(line)) {
+        if(currentText) out.push(currentText);
+        currentText = '';
+        continue;
+    }
+    currentText += (currentText ? ' ' : '') + line.replace(/<[^>]+>/g, '');
+  }
+  if(currentText) out.push(currentText);
+  return out.filter((line, index, self) => self.indexOf(line) === index).join(' ');
+}
+
+// ---------------- Unofficial transcript (watch page scrape) ----------------
+
+async function fetchTranscriptWeb(videoId, preferredLangs = ['en', 'en-US', 'en-GB']) {
+  const res = await fetch(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&hl=en`, {
+    credentials: 'omit',
+    cache: 'no-store',
+    headers: { 'Accept-Language': 'en' }
+  });
+  const html = await res.text();
+
+  const prMatch = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;/s);
+  if (!prMatch) throw new Error('Could not locate player response.');
+  const player = JSON.parse(prMatch[1]);
+
+  const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!Array.isArray(tracks) || tracks.length === 0) throw new Error('No caption tracks found for this video.');
+
+  const score = (t) => {
+    let s = 0;
+    if (!t.kind || !/asr/i.test(t.kind)) s += 5;
+    if (preferredLangs.includes(t.languageCode)) s += 3;
+    if (/^en\b/i.test(t.languageCode)) s += 2;
+    return s;
+    };
+  tracks.sort((a, b) => score(b) - score(a));
+  const track = tracks[0];
+  let url = track?.baseUrl;
+  if (!url) throw new Error('Selected caption track has no URL.');
+
+  if (!/[?&]fmt=/.test(url)) {
+    url += (url.includes('?') ? '&' : '?') + 'fmt=vtt';
+  }
+
+  const vttRes = await fetch(url, { credentials: 'omit', cache: 'no-store' });
+  if (!vttRes.ok) throw new Error(`Caption fetch failed with status: ${vttRes.status}`);
+  const vtt = await vttRes.text();
+  const text = vttToPlainText(vtt);
+  if (!text.trim()) throw new Error('Transcript is empty.');
+  return text;
+}
+
+// ---------------- Official YouTube Data API (owned videos only) ----------------
+
+async function getOAuthTokenInteractive() {
+  return new Promise((resolve) => {
+    if (!chrome.identity || !chrome.identity.getAuthToken) return resolve(null);
+    chrome.identity.getAuthToken({ interactive: true }, (token) => {
+      if (chrome.runtime.lastError) return resolve(null);
+      resolve(token || null);
+    });
+  });
+}
+
+async function fetchTranscriptOfficial(videoId) {
+  const token = await getOAuthTokenInteractive();
+  if (!token) throw new Error('OAuth not configured or user not signed in.');
+
+  const listRes = await fetch(`https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${encodeURIComponent(videoId)}`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  if (!listRes.ok) throw new Error(`Official API (captions.list) failed: ${listRes.status}`);
+  const list = await listRes.json();
+  const item = list.items?.[0];
+  if (!item?.id) throw new Error('No caption tracks available via API (or you lack permission).');
+
+  const dlRes = await fetch(`https://www.googleapis.com/youtube/v3/captions/${item.id}?tfmt=vtt`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  if (!dlRes.ok) throw new Error(`Official API (captions.download) failed: ${dlRes.status}`);
+  const vtt = await dlRes.text();
+  const text = vttToPlainText(vtt);
+  if (!text.trim()) throw new Error('Empty transcript from official API.');
+  return text;
+}
+
+// ---------------- Unified transcript fetch ----------------
+
+const TRANSCRIPT_PROVIDER = 'auto'; // 'auto' | 'web' | 'official'
+
+async function getTranscript(videoId) {
+  if (TRANSCRIPT_PROVIDER === 'web') {
+    return await fetchTranscriptWeb(videoId);
+  }
+  if (TRANSCRIPT_PROVIDER === 'official') {
+    return await fetchTranscriptOfficial(videoId);
+  }
+  // auto
+  try {
+    return await fetchTranscriptWeb(videoId);
+  } catch (e1) {
+    try {
+      return await fetchTranscriptOfficial(videoId);
+    } catch (e2) {
+      throw new Error(`Web: ${e1?.message || e1} | Official: ${e2?.message || e2}`);
+    }
+  }
+}
+
+// ---------------- Popup actions ----------------
+
+async function handleCopyTranscript(url, sendResponse) {
+  const videoId = getYouTubeVideoId(url);
+  if (!videoId) {
+    const payload = { status: 'error', message: 'Could not identify YouTube video ID.' };
+    sendResponse?.(payload);
+    return;
   }
 
   try {
-    const info = await yt.getInfo(videoId);                 // VideoInfo
-    let tx = await info.getTranscript();                     // TranscriptInfo
-
-    // No transcript at all?
-    const list = tx?.transcript?.content?.body?.initial_segments;
-    if (!list?.length) {
-      return { status: "error", message: "No transcript available for this video." };
+    const transcript = await getTranscript(videoId);
+    const copied = await copyToClipboardViaOffscreen(transcript);
+    if (copied) {
+      sendResponse?.({ status: 'success', message: 'Transcript copied!' });
+    } else {
+      sendResponse?.({ status: 'error', message: 'Failed to copy to clipboard.' });
     }
-
-    // Flatten segments -> plain text (using typed YTNodes)
-    const segments = list
-      .filter(seg => seg.is?.(YTNodes.TranscriptSegment))
-      .map(seg => seg.as(YTNodes.TranscriptSegment).snippet?.toString().trim())
-      .filter(Boolean);
-
-    if (!segments.length) {
-      return { status: "error", message: "Transcript was empty." };
-    }
-
-    const transcriptText = segments.join(' ');
-    return { status: "success", transcript: transcriptText };
   } catch (err) {
-    console.error("YouTube.js transcript failure:", err);
-    return { status: "error", message: `YouTube transcript failed: ${err?.message || err}` };
+    const payload = { status: 'error', message: String(err?.message || err) };
+    sendResponse?.(payload);
   }
 }
 
+async function handleSummarizeInStudio(url, sendResponse) {
+  const videoId = getYouTubeVideoId(url);
+  if (!videoId) {
+    sendResponse?.({ status: 'error', message: 'Could not identify YouTube video ID.' });
+    return;
+  }
 
-// --- Main Action Handlers (UPDATED) ---
-
-async function automateAIStudio(tabId, promptText) {
-    try {
-        await chrome.scripting.executeScript({ target: { tabId: tabId }, files: ['content_script_aistudio.js'] });
-        const response = await chrome.tabs.sendMessage(tabId, { action: 'injectDataAndRun', prompt: promptText });
-        if (!response?.success) {
-            throw new Error(response?.error || 'Content script error in AI Studio.');
-        }
-        chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'AI Studio Automation', message: 'AI Studio automation initiated.' });
-    } catch (error) {
-        chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'AI Studio Automation Failed', message: `Could not automate AI Studio: ${error.message}` });
-    }
+  try {
+    const transcript = await getTranscript(videoId);
+    await chrome.storage.local.set({ 'briefly:lastTranscript': transcript });
+    await chrome.tabs.create({ url: 'https://aistudio.google.com/' });
+    sendResponse?.({ status: 'success_fetch', message: 'Transcript ready. Opening AI Studio…' });
+  } catch (err) {
+    sendResponse?.({ status: 'error', message: String(err?.message || err) });
+  }
 }
 
-async function handleCopyTranscript(url, sendResponseToPopup) {
-    const videoId = getYouTubeVideoId(url);
-    if (!videoId) {
-        const payload = { status: "error", message: "Could not identify YouTube Video ID." };
-        if (sendResponseToPopup) sendResponseToPopup(payload); else chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Error', message: payload.message });
-        return;
-    }
+// Message router
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.action === 'copyTranscriptFromPopup' && message.url) {
+    handleCopyTranscript(message.url, sendResponse);
+    return true;
+  }
+  if (message?.action === 'summarizeInStudioFromPopup' && message.url) {
+    handleSummarizeInStudio(message.url, sendResponse);
+    return true;
+  }
+  return false;
+});
 
-    const result = await fetchTranscriptWithApi(videoId);
-
-    if (result.status === "success" && result.transcript) {
-        const copied = await copyToClipboardViaOffscreen(result.transcript);
-        if (copied) {
-            const payload = { status: "success", message: "Transcript copied!" };
-             if (sendResponseToPopup) sendResponseToPopup(payload); else chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Success', message: payload.message });
-        } else {
-            if (sendResponseToPopup) sendResponseToPopup({ status: "error", message: "Failed to copy to clipboard." });
-        }
-    } else {
-        const payload = { status: "error", message: result.message || 'Failed to get transcript from all available sources.' };
-        if (sendResponseToPopup) sendResponseToPopup(payload); else chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Transcript Error', message: payload.message });
-    }
-}
-
-async function handleSummarizeInStudio(url, sendResponseToPopup) {
-    const videoId = getYouTubeVideoId(url);
-    if (!videoId) {
-        const payload = { status: "error", message: "Could not identify YouTube Video ID for summarization." };
-        if (sendResponseToPopup) sendResponseToPopup(payload); else chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Error', message: payload.message });
-        return;
-    }
-
-    const result = await fetchTranscriptWithApi(videoId);
-
-    if (result.status !== "success" || !result.transcript) {
-        const payload = { status: "error", message: result.message || 'Failed to get a valid transcript for summarization from all sources.' };
-        if (sendResponseToPopup) sendResponseToPopup(payload); else chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Automation Error', message: payload.message });
-        return;
-    }
-    if (sendResponseToPopup) {
-        sendResponseToPopup({ status: "success_fetch", message: "Transcript fetched. Opening AI Studio..." });
-    }
-    const promptText = `Summarize the following YouTube video transcript. Be concise but ensure all key information, data points, and unique insights are retained. The summary should be well-structured for easy reading:\n\n---\n\n${result.transcript}\n\n---`;
-    try {
-        const aiTab = await chrome.tabs.create({ url: "https://aistudio.google.com/", active: true });
-        chrome.tabs.onUpdated.addListener(function listener(tabId, changeInfo) {
-            if (tabId === aiTab.id && changeInfo.status === 'complete' && changeInfo.url && changeInfo.url.startsWith("https://aistudio.google.com")) {
-                chrome.tabs.onUpdated.removeListener(listener);
-                setTimeout(() => { automateAIStudio(aiTab.id, promptText); }, 1500);
-            }
-        });
-    } catch (error) {
-        chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Error Opening Tab', message: `Could not open AI Studio: ${error.message}` });
-    }
-}
-
-
-// --- Event Listeners ---
+// --- Context Menus ---
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.removeAll(() => {
         chrome.contextMenus.create({
@@ -204,8 +278,9 @@ chrome.runtime.onInstalled.addListener(() => {
     });
 });
 
-chrome.contextMenus.onClicked.addListener(async (info) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (!info.linkUrl) return;
+
     if (info.menuItemId === "getAndCopyTranscript") {
         await handleCopyTranscript(info.linkUrl, null);
     } else if (info.menuItemId === "summarizeInAIStudio") {
@@ -213,15 +288,5 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
     }
 });
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'copyTranscriptFromPopup' && message.url) {
-        handleCopyTranscript(message.url, sendResponse);
-        return true;
-    } else if (message.action === 'summarizeInStudioFromPopup' && message.url) {
-        handleSummarizeInStudio(message.url, sendResponse);
-        return true;
-    }
-    return false;
-});
 
-console.log("Briefly background script loaded with new YouTube API module.");
+console.log('Briefly background script loaded.');

@@ -1,57 +1,57 @@
-chrome.runtime.onMessage.addListener(handleMessages);
+// Briefly — Offscreen document script
 
-async function handleMessages(message, sender, sendResponse) {
-    if (message.target !== 'offscreen') {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.target !== 'offscreen') return; // ignore others
 
-        return false; 
-    }
+  // Ready handshake
+  if (message.type === 'ping') {
+    sendResponse({ ready: true });
+    return; // sync response
+  }
 
-    if (message.type !== 'copy-to-clipboard') {
-        console.warn("Offscreen: Received unknown message type:", message.type);
-        sendResponse({ success: false, error: "Unknown message type for offscreen document" });
-        return true; 
-    }
+  if (message.type !== 'copy-to-clipboard') {
+    sendResponse({ success: false, error: 'Unknown message type' });
+    return;
+  }
 
-    let success = false;
-    let errorMsg = null;
+  (async () => {
+    let success = false, errorMsg = null;
 
     try {
-        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-            await navigator.clipboard.writeText(message.data);
-            success = true;
-
-        } else {
-
-        }
-    } catch (err) {
-        errorMsg = `navigator.clipboard error: ${err.message}`;
-
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(message.data);
+        success = true;
+      }
+    } catch (e) {
+      errorMsg = `navigator.clipboard error: ${e?.message || e}`;
     }
 
-    if (!success) { 
-        const textArea = document.createElement("textarea");
-        textArea.style.position = "absolute";
-        textArea.style.left = "-9999px";
-        textArea.value = message.data;
-        document.body.appendChild(textArea);
+    if (!success) {
+      const textArea = document.createElement('textarea');
+      textArea.style.position = 'absolute';
+      textArea.style.left = '-9999px';
+      textArea.setAttribute('aria-hidden', 'true');
+      textArea.value = message.data == null ? '' : String(message.data);
+      document.body.appendChild(textArea);
+      try {
         textArea.focus();
         textArea.select();
-        try {
-            document.execCommand('copy');
-            success = true;
-
-            if (errorMsg) { 
-
-                errorMsg = null; 
-            }
-        } catch (err) {
-
-            if (!errorMsg) errorMsg = `execCommand error: ${err.message}`; 
+        const ok = document.execCommand('copy');
+        if (ok) {
+          success = true;
+          errorMsg = null;
+        } else if (!errorMsg) {
+          errorMsg = 'execCommand returned false';
         }
+      } catch (e) {
+        if (!errorMsg) errorMsg = `execCommand error: ${e?.message || e}`;
+      } finally {
         document.body.removeChild(textArea);
+      }
     }
 
-    sendResponse({ success: success, error: errorMsg });
-    return true; 
-}
+    sendResponse({ success, error: errorMsg });
+  })();
 
+  return true; // keep port open for async response
+});
