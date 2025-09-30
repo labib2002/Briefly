@@ -4,21 +4,27 @@ import Innertube, { YTNodes } from './node_modules/youtubei.js/bundle/browser.js
 // --- Core Setup ---
 const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
 let creatingOffscreenDocumentPromise = null;
-let yt;
+let ytInitializationPromise;
 
-// Initialize the YouTube API client on startup
-(async () => {
+// Function to initialize the YouTube API client, wrapped in a promise.
+const initializeYT = async () => {
     try {
-        yt = await Innertube.create({
+        const yt = await Innertube.create({
             generate_session_locally: true,
             lang: 'en',
             fetch: self.fetch.bind(self)
         });
         console.log("Briefly: YouTube API client initialized successfully.");
+        return yt;
     } catch (error) {
         console.error("Briefly: Failed to initialize YouTube API client.", error);
+        // Propagate the error to allow callers to handle the failure.
+        throw error;
     }
-})();
+};
+
+// Start the initialization process immediately. Callers will await this promise.
+ytInitializationPromise = initializeYT();
 
 // --- Offscreen API for Clipboard (REVISED FOR ROBUSTNESS) ---
 
@@ -156,11 +162,14 @@ function getYouTubeVideoId(url) {
  * @returns {Promise<{status: string, transcript?: string, message?: string}>}
  */
 async function fetchTranscriptWithApi(videoId) {
-  if (!yt) {
-    return { status: "error", message: "YouTube API client is not initialized." };
-  }
-
   try {
+    // Await the initialization promise to ensure the client is ready.
+    const yt = await ytInitializationPromise;
+    if (!yt) {
+        // This case handles if initialization failed and the promise resolved to a falsy value.
+        return { status: "error", message: "YouTube API client is not available." };
+    }
+
     const info = await yt.getInfo(videoId);                 // VideoInfo
     let tx = await info.getTranscript();                     // TranscriptInfo
 
