@@ -1,5 +1,5 @@
 // Import the new library and the core Innertube class
-import Innertube, { YTNodes } from './youtubei.js';
+import Innertube, { YTNodes } from './node_modules/youtubei.js/bundle/browser.js';
 
 // --- Core Setup ---
 const OFFSCREEN_DOCUMENT_PATH = '/offscreen.html';
