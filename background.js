@@ -20,18 +20,93 @@ let yt;
     }
 })();
 
-// --- Offscreen API for Clipboard (Unchanged) ---
+// --- Offscreen API for Clipboard (REVISED FOR ROBUSTNESS) ---
+
+// Helper to create and ensure the offscreen document is ready.
+async function ensureOffscreenReady() {
+    // 1. Create the offscreen document if it doesn't exist.
+    await setupOffscreenDocument(OFFSCREEN_DOCUMENT_PATH);
+
+    // 2. Ping the offscreen document until it responds, with a timeout.
+    return new Promise((resolve, reject) => {
+        const timeout = 5000; // 5 seconds timeout
+        const interval = 100;  // Ping every 100ms
+        let elapsed = 0;
+
+        const timer = setInterval(async () => {
+            elapsed += interval;
+            if (elapsed >= timeout) {
+                clearInterval(timer);
+                reject(new Error("Timeout waiting for offscreen document to become ready."));
+                return;
+            }
+
+            try {
+                const response = await chrome.runtime.sendMessage({
+                    target: 'offscreen',
+                    type: 'ping'
+                });
+                if (response?.ready) {
+                    clearInterval(timer);
+                    resolve(true);
+                }
+            } catch (error) {
+                // This error is expected if the offscreen document is not yet ready to receive messages.
+                // We'll just let the interval continue until the timeout.
+            }
+        }, interval);
+    });
+}
+
+// Revised function to copy text to the clipboard with readiness check and retries.
 async function copyToClipboardViaOffscreen(textToCopy) {
     if (typeof textToCopy !== 'string') {
         chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Clipboard Error', message: 'Invalid data for copying.' });
         return false;
     }
-    await setupOffscreenDocument(OFFSCREEN_DOCUMENT_PATH);
-    const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'copy-to-clipboard', data: textToCopy });
-    if (response && response.success) return true;
-    chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Copy Failed', message: `Could not copy: ${response?.error || 'Unknown reason'}` });
+
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY_MS = 250;
+    let lastError = 'Unknown reason';
+
+    for (let i = 0; i < MAX_RETRIES; i++) {
+        try {
+            // 1. Ensure the offscreen document is set up and responsive.
+            await ensureOffscreenReady();
+
+            // 2. Send the copy command.
+            const response = await chrome.runtime.sendMessage({
+                target: 'offscreen',
+                type: 'copy-to-clipboard',
+                data: textToCopy
+            });
+
+            // 3. Check for success.
+            if (response?.success) {
+                return true; // Success!
+            }
+            lastError = response?.error || 'The offscreen page reported a failure.';
+        } catch (error) {
+            lastError = error.message;
+            // This catch block handles errors from ensureOffscreenReady or sendMessage itself.
+        }
+
+        // If not the last attempt, wait before retrying.
+        if (i < MAX_RETRIES - 1) {
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+    }
+
+    // If all retries fail, show a notification.
+    chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/briefly-48.png',
+        title: 'Copy Failed',
+        message: `Could not copy after ${MAX_RETRIES} attempts: ${lastError}`
+    });
     return false;
 }
+
 
 async function setupOffscreenDocument(path) {
     const offscreenUrl = chrome.runtime.getURL(path);
@@ -145,6 +220,7 @@ async function handleCopyTranscript(url, sendResponseToPopup) {
             const payload = { status: "success", message: "Transcript copied!" };
              if (sendResponseToPopup) sendResponseToPopup(payload); else chrome.notifications.create({ type: 'basic', iconUrl: 'icons/briefly-48.png', title: 'Success', message: payload.message });
         } else {
+            // The clipboard function now handles its own error notifications.
             if (sendResponseToPopup) sendResponseToPopup({ status: "error", message: "Failed to copy to clipboard." });
         }
     } else {
@@ -205,7 +281,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener(async (info) => {
-    if (!info.linkUrl) return;
+    if (!info.linkUrl) return.
     if (info.menuItemId === "getAndCopyTranscript") {
         await handleCopyTranscript(info.linkUrl, null);
     } else if (info.menuItemId === "summarizeInAIStudio") {
