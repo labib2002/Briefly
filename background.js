@@ -83,37 +83,9 @@ async function fetchTranscriptWithApi(videoId) {
     }
 
     try {
-        // Step 1: Call /next to get the page data, which includes engagement panels
-        const next_response = await yt.actions.execute("/next", { videoId });
-
-        const engagement_panels = next_response.data.engagementPanels;
-        if (!engagement_panels) {
-            throw new Error("Engagement panels not found. Video may not have a transcript panel.");
-        }
-
-        // Step 2: Find the transcript panel and extract the parameters for the get_transcript call
-        let transcript_params;
-        for (const panel of engagement_panels) {
-            if (panel.engagementPanelSectionListRenderer?.panelIdentifier === "engagement-panel-searchable-transcript") {
-                transcript_params = panel.engagementPanelSectionListRenderer.content?.continuationItemRenderer?.continuationEndpoint?.getTranscriptEndpoint?.params;
-                break;
-            }
-        }
-
-        if (!transcript_params) {
-            throw new Error("Transcript parameters not found. The video likely does not have a transcript.");
-        }
-        
-        // Step 3: Call /get_transcript with the extracted parameters
-        const transcript_response = await yt.actions.execute("/get_transcript", { params: transcript_params });
-        
-        const transcript_renderer = transcript_response.data.actions[0]?.updateEngagementPanelAction?.content?.transcriptRenderer;
-        const segments = transcript_renderer?.content?.transcriptSearchPanelRenderer?.body?.transcriptSegmentListRenderer?.initialSegments;
-        
-        if (segments && segments.length > 0) {
-            const full_text = segments
-                .map(segment => segment.transcriptSegmentRenderer.snippet.runs[0].text)
-                .join(' ');
+        const transcript = await yt.getTranscript(videoId);
+        if (transcript.content) {
+            const full_text = transcript.content.map((segment) => segment.snippet).join(' ');
             return { status: "success", transcript: full_text };
         }
 

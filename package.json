@@ -1,0 +1,8 @@
+{
+  "name": "youtube-caption-fetcher",
+  "version": "1.0.0",
+  "description": "A browser extension to fetch youtube captions.",
+  "dependencies": {
+    "youtubei.js": "^8.0.0"
+  }
+}
