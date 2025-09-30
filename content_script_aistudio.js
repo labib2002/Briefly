@@ -45,22 +45,25 @@ function setTextAreaValue(textareaElement, value) {
 // Selects the desired AI model if not already selected.
 async function selectModelIfNeeded(modelNameSubstring) {
     try {
-        const modelSelectorTrigger = await waitForElement('prompt-header ms-model-selector mat-select');
-        const currentModelDisplay = modelSelectorTrigger.querySelector('.mat-mdc-select-value-text .gmat-body-medium');
+        const modelSelectorCard = await waitForElement('ms-model-selector-v3 .model-selector-card');
+        const currentModelDisplay = modelSelectorCard.querySelector('.title');
         if (currentModelDisplay && currentModelDisplay.textContent.includes(modelNameSubstring)) return true;
 
-        modelSelectorTrigger.click();
-        const modelDropdownPanel = await waitForElement('div.cdk-overlay-container div.mat-mdc-select-panel');
+        modelSelectorCard.click();
+        const modelPanel = await waitForElement('ms-sliding-right-panel');
         let desiredOption = null;
-        modelDropdownPanel.querySelectorAll('mat-option').forEach(opt => {
-            const txtEl = opt.querySelector('.model-option-content .gmat-body-medium');
-            if(txtEl && txtEl.textContent.includes(modelNameSubstring)) desiredOption = opt;
+        // The panel contains model options, find the one we want. This might need adjustment based on the actual elements.
+        modelPanel.querySelectorAll('button, div').forEach(el => {
+             if (el.textContent.includes(modelNameSubstring)) desiredOption = el;
         });
+
         if (desiredOption) {
             desiredOption.click();
-            return await waitForCondition(() => modelSelectorTrigger.querySelector('.mat-mdc-select-value-text .gmat-body-medium')?.textContent.includes(modelNameSubstring), 5000, "Model update");
+            return await waitForCondition(() => modelSelectorCard.querySelector('.title')?.textContent.includes(modelNameSubstring), 5000, "Model update");
         } else {
-            if (document.querySelector('div.cdk-overlay-container div.mat-mdc-select-panel')) modelSelectorTrigger.click(); // Close dropdown
+            // If the option isn't found, we can try to close the panel if it has a close button.
+            const closeButton = modelPanel.querySelector('button[aria-label="Close"]');
+            if (closeButton) closeButton.click();
             return false;
         }
     } catch (error) { return false; }
@@ -69,11 +72,13 @@ async function selectModelIfNeeded(modelNameSubstring) {
 // Disables "Thinking mode" in AI Studio settings if enabled.
 async function disableThinkingModeIfNeeded() {
     try {
-        const runSettingsPanelToggle = await waitForElement('ms-right-side-panel .toggles-container button[aria-label="Run settings"]');
-        const runSettingsPanel = await waitForElement('ms-right-side-panel ms-run-settings');
+        const runSettingsPanel = await waitForElement('ms-run-settings');
+        // The panel is now persistently visible, so we don't need to click a button to open it.
+        // We just need to check for the 'expanded' class, though it might be always expanded.
         if (!runSettingsPanel.classList.contains('expanded')) {
-            runSettingsPanelToggle.click();
-            if (!await waitForCondition(() => runSettingsPanel.classList.contains('expanded'), 5000, "Run settings open")) return false;
+            // If it's not expanded, there's no button to click in the new UI, so we can't proceed.
+            // This part of the logic might need to be removed if the panel is always expanded.
+            console.warn("Run settings panel is not expanded, and there's no button to expand it.");
         }
         const thinkingModeSwitch = await waitForElement('mat-slide-toggle[data-test-toggle="enable-thinking"] button[role="switch"]', 10000, runSettingsPanel);
         if (thinkingModeSwitch.getAttribute('aria-checked') === 'true') {
