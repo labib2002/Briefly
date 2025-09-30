@@ -45,43 +45,82 @@ function setTextAreaValue(textareaElement, value) {
 // Selects the desired AI model if not already selected.
 async function selectModelIfNeeded(modelNameSubstring) {
     try {
-        const modelSelectorTrigger = await waitForElement('prompt-header ms-model-selector mat-select');
-        const currentModelDisplay = modelSelectorTrigger.querySelector('.mat-mdc-select-value-text .gmat-body-medium');
-        if (currentModelDisplay && currentModelDisplay.textContent.includes(modelNameSubstring)) return true;
+        const modelSelectorCard = await waitForElement('ms-model-selector-v3 .model-selector-card');
+        const currentModelDisplay = modelSelectorCard.querySelector('.title');
+        const modelNameLower = modelNameSubstring.toLowerCase();
 
-        modelSelectorTrigger.click();
-        const modelDropdownPanel = await waitForElement('div.cdk-overlay-container div.mat-mdc-select-panel');
+        // Robust check: case-insensitive
+        if (currentModelDisplay && currentModelDisplay.textContent.toLowerCase().includes(modelNameLower)) {
+            console.log(`Model "${modelNameSubstring}" is already selected.`);
+            return true;
+        }
+
+        modelSelectorCard.click();
+        const modelPanel = await waitForElement('ms-sliding-right-panel');
         let desiredOption = null;
-        modelDropdownPanel.querySelectorAll('mat-option').forEach(opt => {
-            const txtEl = opt.querySelector('.model-option-content .gmat-body-medium');
-            if(txtEl && txtEl.textContent.includes(modelNameSubstring)) desiredOption = opt;
-        });
+
+        // Find the option. Prioritize data-test-id, then fall back to text content.
+        const options = modelPanel.querySelectorAll('[data-test-id="model-name"], button, div.title');
+        for (const el of options) {
+            const elText = el.textContent.toLowerCase();
+            if (elText.includes(modelNameLower)) {
+                desiredOption = el.closest('button') || el; // Find the clickable parent
+                break;
+            }
+        }
+
         if (desiredOption) {
             desiredOption.click();
-            return await waitForCondition(() => modelSelectorTrigger.querySelector('.mat-mdc-select-value-text .gmat-body-medium')?.textContent.includes(modelNameSubstring), 5000, "Model update");
+            const success = await waitForCondition(
+                () => modelSelectorCard.querySelector('.title')?.textContent.toLowerCase().includes(modelNameLower),
+                5000,
+                `Model update to "${modelNameSubstring}"`
+            );
+            if (!success) {
+                 console.warn(`Failed to confirm model update to "${modelNameSubstring}" after clicking. Continuing anyway.`);
+            }
+            return true;
         } else {
-            if (document.querySelector('div.cdk-overlay-container div.mat-mdc-select-panel')) modelSelectorTrigger.click(); // Close dropdown
+            console.warn(`Could not find an option for model "${modelNameSubstring}".`);
+            const closeButton = modelPanel.querySelector('button[aria-label="Close"]');
+            if (closeButton) closeButton.click();
             return false;
         }
-    } catch (error) { return false; }
+    } catch (error) {
+        console.error("Error in selectModelIfNeeded:", error);
+        return false;
+    }
 }
 
 // Disables "Thinking mode" in AI Studio settings if enabled.
 async function disableThinkingModeIfNeeded() {
     try {
-        const runSettingsPanelToggle = await waitForElement('ms-right-side-panel .toggles-container button[aria-label="Run settings"]');
         const runSettingsPanel = await waitForElement('ms-right-side-panel ms-run-settings');
-        if (!runSettingsPanel.classList.contains('expanded')) {
-            runSettingsPanelToggle.click();
-            if (!await waitForCondition(() => runSettingsPanel.classList.contains('expanded'), 5000, "Run settings open")) return false;
+        const thinkingModeSwitchButton = await waitForElement('mat-slide-toggle[data-test-toggle="enable-thinking"] button[role="switch"]', 5000, runSettingsPanel);
+
+        // Check if the switch is disabled
+        if (thinkingModeSwitchButton.disabled || thinkingModeSwitchButton.getAttribute('aria-disabled') === 'true') {
+            console.warn("Thinking mode toggle is disabled. Cannot change setting.");
+            return true; // Continue gracefully
         }
-        const thinkingModeSwitch = await waitForElement('mat-slide-toggle[data-test-toggle="enable-thinking"] button[role="switch"]', 10000, runSettingsPanel);
-        if (thinkingModeSwitch.getAttribute('aria-checked') === 'true') {
-            thinkingModeSwitch.click();
-            await waitForCondition(() => thinkingModeSwitch.getAttribute('aria-checked') === 'false', 5000, "Thinking mode disable");
+
+        // If it's on, try to turn it off
+        if (thinkingModeSwitchButton.getAttribute('aria-checked') === 'true') {
+            thinkingModeSwitchButton.click();
+            const turnedOff = await waitForCondition(
+                () => thinkingModeSwitchButton.getAttribute('aria-checked') === 'false',
+                5000,
+                "Thinking mode disable"
+            );
+            if (!turnedOff) {
+                console.warn("Thinking mode did not toggle off after 5 seconds. Continuing anyway.");
+            }
         }
         return true;
-    } catch (error) { return false; }
+    } catch (error) {
+        console.warn("Could not find or interact with the Thinking mode toggle. This might be expected.", error);
+        return true; // Return true to not block the main process.
+    }
 }
 
 // Main message listener for actions from the background script.
