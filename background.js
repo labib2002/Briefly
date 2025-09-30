@@ -53,19 +53,22 @@ async function setupOffscreenDocument(path) {
 // --- New API-Driven Transcript Logic ---
 
 function getYouTubeVideoId(url) {
-    if (!url) return null;
-    try {
-        const urlObject = new URL(url);
-        if (urlObject.hostname.includes('youtube.com') && urlObject.searchParams.has('v')) {
-            return urlObject.searchParams.get('v');
-        }
-        if (urlObject.hostname.includes('youtu.be')) {
-            return urlObject.pathname.substring(1);
-        }
-    } catch (e) {
-        console.error("Error parsing URL for Video ID:", url, e);
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const v = u.searchParams.get('v');
+    if (v) return v;                           // https://www.youtube.com/watch?v=ID
+
+    if (u.hostname.endsWith('youtu.be')) {     // https://youtu.be/ID
+      return u.pathname.slice(1);
     }
-    return null;
+
+    const m = u.pathname.match(/^\/(?:shorts|embed)\/([A-Za-z0-9_-]{6,})/); // shorts/embed
+    if (m) return m[1];
+  } catch (e) {
+    console.error("Error parsing URL for Video ID:", url, e);
+  }
+  return null;
 }
 
 /**
@@ -78,59 +81,36 @@ function getYouTubeVideoId(url) {
  * @returns {Promise<{status: string, transcript?: string, message?: string}>}
  */
 async function fetchTranscriptWithApi(videoId) {
-    if (!yt) {
-        return { status: "error", message: "YouTube API client is not initialized." };
+  if (!yt) {
+    return { status: "error", message: "YouTube API client is not initialized." };
+  }
+
+  try {
+    const info = await yt.getInfo(videoId);                 // VideoInfo
+    let tx = await info.getTranscript();                     // TranscriptInfo
+
+    // No transcript at all?
+    const list = tx?.transcript?.content?.body?.initial_segments;
+    if (!list?.length) {
+      return { status: "error", message: "No transcript available for this video." };
     }
 
-    try {
-        const video_info = await yt.getInfo(videoId);
-        const player_captions = video_info.captions;
-        if (!player_captions) {
-            return { status: "error", message: "No captions found for this video." };
-        }
+    // Flatten segments -> plain text (using typed YTNodes)
+    const segments = list
+      .filter(seg => seg.is?.(YTNodes.TranscriptSegment))
+      .map(seg => seg.as(YTNodes.TranscriptSegment).snippet?.toString().trim())
+      .filter(Boolean);
 
-        const caption_tracks = player_captions.player_captions_tracklist_renderer.caption_tracks;
-        if (!caption_tracks || caption_tracks.length === 0) {
-            return { status: "error", message: "No caption tracks found for this video." };
-        }
-
-        // Prioritize English, but fall back to the first available track.
-        let track = caption_tracks.find(t => t.language_code === 'en') || caption_tracks[0];
-
-        const response = await yt.actions.execute('get_transcript', { params: track.params });
-
-        if (!response.actions || !response.actions[0].update_engagement_panel_action) {
-             return { status: "error", message: "Could not retrieve transcript data." };
-        }
-
-        const transcript_renderer = response.actions[0].update_engagement_panel_action.content.transcript_renderer;
-        if (!transcript_renderer || !transcript_renderer.body) {
-            return { status: "error", message: "Transcript renderer is empty." };
-        }
-
-        const cue_groups = transcript_renderer.body.transcript_body_renderer.cue_groups;
-        const full_text = cue_groups.map(cue_group =>
-            cue_group.transcript_cue_group_renderer.cues.map(cue =>
-                cue.transcript_cue_renderer.cue.simple_text || ''
-            ).join(' ')
-        ).join(' ');
-
-        if (full_text) {
-            return { status: "success", transcript: full_text };
-        }
-
-        return { status: "error", message: "Failed to extract text from transcript." };
-
-    } catch (error) {
-        console.error("Error fetching transcript via API:", error);
-        if (error.message.includes("is private")) {
-             return { status: "error", message: "This video is private, cannot get transcript." };
-        }
-        if (error.message.includes("does not have captions")) {
-             return { status: "error", message: "This video does not have captions enabled." };
-        }
-        return { status: "error", message: `API Error: ${error.message}` };
+    if (!segments.length) {
+      return { status: "error", message: "Transcript was empty." };
     }
+
+    const transcriptText = segments.join(' ');
+    return { status: "success", transcript: transcriptText };
+  } catch (err) {
+    console.error("YouTube.js transcript failure:", err);
+    return { status: "error", message: `YouTube transcript failed: ${err?.message || err}` };
+  }
 }
 
 
