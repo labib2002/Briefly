@@ -98,65 +98,6 @@ async function fetchTranscriptWithApi(videoId) {
 }
 
 
-/**
- * NEW FALLBACK LOGIC
- * Fetches transcript using the official YouTube Data API v3.
- * @param {string} videoId
- * @returns {Promise<{status: string, transcript?: string, message?: string}>}
- */
-async function fetchTranscriptWithOfficialApi(videoId) {
-    const YOUTUBE_API_KEY = "YOUR_YOUTUBE_API_KEY"; // Placeholder for user's API key
-    if (YOUTUBE_API_KEY === "YOUR_YOUTUBE_API_KEY") {
-        return { status: "error", message: "Official YouTube API key is not set." };
-    }
-
-    try {
-        // 1. List available caption tracks
-        const listUrl = `https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${videoId}&key=${YOUTUBE_API_KEY}`;
-        const listResponse = await fetch(listUrl);
-        const listData = await listResponse.json();
-
-        if (!listResponse.ok) {
-            const errorMessage = listData.error?.message || `HTTP error! status: ${listResponse.status}`;
-            throw new Error(errorMessage);
-        }
-
-        if (!listData.items || listData.items.length === 0) {
-            return { status: "error", message: "No caption tracks found via official API." };
-        }
-
-        // 2. Prefer English, but fall back to the first available track
-        const track = listData.items.find(item => item.snippet.language === 'en') || listData.items[0];
-
-        // 3. Download the caption track in SRT format
-        const downloadUrl = `https://www.googleapis.com/youtube/v3/captions/${track.id}?tfmt=srt&key=${YOUTUBE_API_KEY}`;
-        const srtResponse = await fetch(downloadUrl);
-         if (!srtResponse.ok) {
-            const errorData = await srtResponse.json().catch(() => ({}));
-            const errorMessage = errorData.error?.message || `HTTP error! status: ${srtResponse.status}`;
-            throw new Error(`Failed to download SRT track: ${errorMessage}`);
-        }
-        const srtText = await srtResponse.text();
-
-        // 4. Parse SRT: remove timestamps and line numbers to get clean text
-        const parsedTranscript = srtText
-            .split('\n')
-            .filter(line => !/^\d+$/.test(line) && !line.includes('-->') && line.trim() !== '')
-            .join(' ');
-
-        if (parsedTranscript) {
-            return { status: "success", transcript: parsedTranscript };
-        }
-
-        return { status: "error", message: "Failed to parse transcript from downloaded SRT file." };
-
-    } catch (error) {
-        console.error("Error fetching transcript via Official API:", error);
-        return { status: "error", message: `Official API Error: ${error.message}` };
-    }
-}
-
-
 // --- Main Action Handlers (UPDATED) ---
 
 async function automateAIStudio(tabId, promptText) {
@@ -180,11 +121,7 @@ async function handleCopyTranscript(url, sendResponseToPopup) {
         return;
     }
 
-    let result = await fetchTranscriptWithApi(videoId);
-    if (result.status !== "success") {
-        console.log("Briefly: Primary API failed, trying official API fallback.");
-        result = await fetchTranscriptWithOfficialApi(videoId);
-    }
+    const result = await fetchTranscriptWithApi(videoId);
 
     if (result.status === "success" && result.transcript) {
         const copied = await copyToClipboardViaOffscreen(result.transcript);
@@ -208,11 +145,7 @@ async function handleSummarizeInStudio(url, sendResponseToPopup) {
         return;
     }
 
-    let result = await fetchTranscriptWithApi(videoId);
-    if (result.status !== "success") {
-        console.log("Briefly: Primary API failed, trying official API fallback for summarization.");
-        result = await fetchTranscriptWithOfficialApi(videoId);
-    }
+    const result = await fetchTranscriptWithApi(videoId);
 
     if (result.status !== "success" || !result.transcript) {
         const payload = { status: "error", message: result.message || 'Failed to get a valid transcript for summarization from all sources.' };
