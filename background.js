@@ -281,7 +281,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener(async (info) => {
-    if (!info.linkUrl) return.
+    if (!info.linkUrl) return
     if (info.menuItemId === "getAndCopyTranscript") {
         await handleCopyTranscript(info.linkUrl, null);
     } else if (info.menuItemId === "summarizeInAIStudio") {
