@@ -83,16 +83,52 @@ async function fetchTranscriptWithApi(videoId) {
     }
 
     try {
-        const transcript = await yt.getTranscript(videoId);
-        if (transcript.content) {
-            const full_text = transcript.content.map((segment) => segment.snippet).join(' ');
+        const video_info = await yt.getInfo(videoId);
+        const player_captions = video_info.captions;
+        if (!player_captions) {
+            return { status: "error", message: "No captions found for this video." };
+        }
+
+        const caption_tracks = player_captions.player_captions_tracklist_renderer.caption_tracks;
+        if (!caption_tracks || caption_tracks.length === 0) {
+            return { status: "error", message: "No caption tracks found for this video." };
+        }
+
+        // Prioritize English, but fall back to the first available track.
+        let track = caption_tracks.find(t => t.language_code === 'en') || caption_tracks[0];
+
+        const response = await yt.actions.execute('get_transcript', { params: track.params });
+
+        if (!response.actions || !response.actions[0].update_engagement_panel_action) {
+             return { status: "error", message: "Could not retrieve transcript data." };
+        }
+
+        const transcript_renderer = response.actions[0].update_engagement_panel_action.content.transcript_renderer;
+        if (!transcript_renderer || !transcript_renderer.body) {
+            return { status: "error", message: "Transcript renderer is empty." };
+        }
+
+        const cue_groups = transcript_renderer.body.transcript_body_renderer.cue_groups;
+        const full_text = cue_groups.map(cue_group =>
+            cue_group.transcript_cue_group_renderer.cues.map(cue =>
+                cue.transcript_cue_renderer.cue.simple_text || ''
+            ).join(' ')
+        ).join(' ');
+
+        if (full_text) {
             return { status: "success", transcript: full_text };
         }
 
-        return { status: "error", message: "No transcript content found in any available language." };
+        return { status: "error", message: "Failed to extract text from transcript." };
 
     } catch (error) {
         console.error("Error fetching transcript via API:", error);
+        if (error.message.includes("is private")) {
+             return { status: "error", message: "This video is private, cannot get transcript." };
+        }
+        if (error.message.includes("does not have captions")) {
+             return { status: "error", message: "This video does not have captions enabled." };
+        }
         return { status: "error", message: `API Error: ${error.message}` };
     }
 }
