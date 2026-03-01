@@ -17,11 +17,11 @@ Skip the video, keep the value. With one right-click or through the extension po
 | Action | What happens |
 | ------ | ------------ |
 | **Get & Copy Transcript** | Uses a bundled JavaScript library (based on `youtube-transcript-api`) directly in the extension → fetches the full transcript (with preferred language logic) → copies it to your clipboard via Chrome’s Offscreen API. |
-| **Summarise in AI Studio** | Same transcript fetching method → opens `aistudio.google.com` → pastes a pre-defined prompt + transcript → attempts to selects preferred model → disables/enables preferred “Thinking mode” → clicks **Run**. |
+| **Summarise in AI Studio** | Same transcript fetching method → opens `aistudio.google.com` → pastes a pre-defined prompt + transcript → attempts to select preferred model → disables/enables preferred “Thinking mode” → clicks **Run**. |
 
 ---
 
-| Feature | info         |
+| Feature | Info         |
 | ------  | ------------ |
 | **Popup Interface** | Access core actions (copy, summarize) for the active YouTube tab directly from the extension icon. |
 | **Robust notifications** | API / network / automation errors bubble up clearly. |
