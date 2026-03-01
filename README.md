@@ -87,7 +87,62 @@ cd briefly
 
 ---
 
-## Roadmap / Future Ideas
+## Strategic Assessment & Roadmap / Future Ideas
+
+### Strategic Assessment (2026)
+
+### Is Briefly still useful after YouTube + Gemini “Summarize this video”?
+
+Yes — but the core value has shifted. A single-video summary button is becoming a commodity. Briefly still has room if it focuses on **workflow depth** rather than just “one-click summarize.”
+
+### Current strengths
+
+* Fast transcript extraction and copy flow from the active tab.
+* Works even when users want to summarize outside YouTube’s native UI.
+* Prompt/model control potential (currently manual in code, expandable via settings).
+* Browser-native distribution (low friction install/use).
+
+### Current weaknesses / risk areas
+
+* AI Studio UI automation is fragile when selectors/UI change.
+* No persistence layer (history, saved outputs, reusable prompts).
+* No batch workflows (playlist or multi-video summaries).
+* No in-product engagement loops (follow-up questions, compare videos, revisit prior summaries).
+
+### User engagement factors that can create real value
+
+* **Time compression at scale**: summarize many videos, not just one.
+* **Continuity**: keep summaries in a local/project workspace users can return to.
+* **Interactivity**: chat with transcript/summaries for follow-up questions and extraction tasks.
+* **Control**: summary modes (TL;DR, study notes, action items, bias check, etc.).
+
+## Recommended Pivot Direction
+
+Keep the extension as the primary surface, and evolve into a **YouTube knowledge workflow tool**.
+
+### Highest-value features to build first
+
+1. **Playlist summary**
+   * Detect playlist context and summarize all (or selected) videos.
+   * Return: per-video short summary + cross-video “meta-summary”.
+2. **Batch from active tabs**
+   * Let users select multiple open YouTube tabs and summarize in one run.
+3. **Persistent workspace**
+   * Save transcript + summary history (local-first via extension storage).
+   * Add pin/favorite/export actions.
+4. **In-page chat panel**
+   * Follow-up Q&A grounded in transcript/summaries.
+   * Quick prompts: “key claims”, “action items”, “what changed from video A to B”.
+5. **Multiple summary modes**
+   * TL;DR, detailed, bullet notes, exam prep, newsletter-ready, timestamp-focused.
+
+### Platform strategy (extension vs pivot)
+
+* **Near-term best approach**: stay as browser extension (fastest iteration, best YouTube context access).
+* **Mid-term hardening**: add direct Gemini API/Vertex option to reduce AI Studio automation fragility.
+* **Long-term expansion options**:
+  * Web app companion for cross-device history and team sharing.
+  * Multi-platform ingestion (podcasts, course platforms, docs/videos in one workspace).
 
 * [ ] **Direct Gemini API Integration** – Add option for Google’s public Gemini API (or Vertex AI) directly, bypassing AI Studio UI automation for a faster and more reliable summarization.
 * [ ] **Enhanced Popup / Options UI** – Allow users to customize preferred languages, edit the AI Studio prompt, select different summarization models, and toggle other features through a dedicated options page or an enhanced popup.
