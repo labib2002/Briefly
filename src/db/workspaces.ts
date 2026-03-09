@@ -178,3 +178,7 @@ export async function updateWorkspaceMetadata(
   await db.workspaces.put(updated);
   return updated;
 }
+
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
+  await db.workspaces.delete(workspaceId);
+}

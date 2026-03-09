@@ -6,6 +6,7 @@ import { db } from '../db';
 import {
   ACTIVE_QUEUE_WORKSPACE_ID,
   createVideoWorkspaceId,
+  deleteWorkspace,
   updateWorkspaceMetadata,
 } from '../db/workspaces';
 import { PREMIUM_PLACEHOLDER_URL } from '../constants/premium';
@@ -24,12 +25,17 @@ import {
   formatWorkspaceAsMarkdown,
 } from '../utils/export-markdown';
 import { formatTimestamp } from '../utils/time';
+import { normalizeYouTubeUrl } from '../utils/youtube';
 import { trackEvent } from '../services/telemetry';
 
 const SUMMARY_MODES: { id: SummaryMode; label: string }[] = [
   { id: 'tldr', label: 'TL;DR' },
   { id: 'action-items', label: 'Action Items' },
   { id: 'timestamped-highlights', label: 'Highlights' },
+  { id: 'study-notes', label: 'Study Notes' },
+  { id: 'due-diligence', label: 'Due Diligence' },
+  { id: 'thread-draft', label: 'Thread Draft' },
+  { id: 'creator-research', label: 'Creator Research' },
 ];
 
 function formatFetchTime(timestamp: number | undefined): string {
@@ -139,6 +145,7 @@ export function CopilotView() {
   const [queueOptimisticState, setQueueOptimisticState] = useState<QueueOptimisticState>(null);
   const [pendingAction, setPendingAction] = useState<'sync' | 'summary' | 'chat' | 'export' | null>(null);
   const [upgradePrompt, setUpgradePrompt] = useState<string | null>(null);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [workspaceMetaDraft, setWorkspaceMetaDraft] = useState<WorkspaceMetadataDraft>({
     name: '',
     notes: '',
@@ -192,6 +199,7 @@ export function CopilotView() {
         ? [currentTranscript]
         : [];
   const selectedVideoIds = selectedWorkspace?.videoIds ?? [];
+  const transcriptByVideoId = new Map(selectedTranscripts.map((transcript) => [transcript.videoId, transcript]));
   const selectedProvider = settings?.selectedProvider ?? 'gemini';
   const activeProviderKey =
     settings?.apiKeys[selectedProvider] ?? settings?.apiKey ?? '';
@@ -202,10 +210,14 @@ export function CopilotView() {
   const customSummaryModes = mapCustomPromptsToModes(settings?.customPrompts ?? []);
   const summaryModes = [...SUMMARY_MODES, ...customSummaryModes];
   const summaryModeLabels = new Map(summaryModes.map((mode) => [mode.id, mode.label]));
+  const latestAssistantMessage = [...(selectedWorkspace?.messages ?? [])]
+    .reverse()
+    .find((message) => message.role === 'assistant');
   const premiumPromptHeading = hasAccount
     ? 'Unlock Batch Workflows & Exports with Premium'
     : 'Sign in & Upgrade';
   const autoSyncActiveVideo = settings?.featureFlags.autoSyncActiveVideo ?? true;
+  const canUsePremiumAudio = isPremium && hasAccount;
   const selectedScopeLabel =
     hasFocusedWorkspace
       ? 'Saved Workspace'
@@ -261,6 +273,12 @@ export function CopilotView() {
       messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
     }
   }, [selectedWorkspace?.id, selectedWorkspace?.messages.length, pendingAction]);
+
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
 
   useEffect(() => {
     setWorkspaceMetaDraft({
@@ -377,7 +395,7 @@ export function CopilotView() {
     setUpgradePrompt(
       hasAccount
         ? `Unlock Batch Workflows & Exports with Premium to use ${feature}.`
-        : `Sign in & Upgrade to unlock ${feature}. Premium access is account-bound so Stripe entitlements can sync back to this extension.`,
+        : `Sign in & Upgrade to unlock ${feature}. Premium access is account-bound so Lemon Squeezy entitlements can sync back to this extension.`,
     );
   };
 
@@ -544,6 +562,86 @@ export function CopilotView() {
     }
   };
 
+  const handleDeleteWorkspace = async () => {
+    if (!selectedWorkspace || selectedWorkspace.id === ACTIVE_QUEUE_WORKSPACE_ID) {
+      return;
+    }
+
+    const confirmed = window.confirm('Delete this workspace from local memory? This cannot be undone.');
+    if (!confirmed) {
+      return;
+    }
+
+    setIsSavingWorkspaceMeta(true);
+    setError(null);
+
+    try {
+      await deleteWorkspace(selectedWorkspace.id);
+      setFocusedWorkspaceId(null);
+      setWorkspaceView('video');
+      setStatus('Workspace deleted from local memory.');
+    } catch (workspaceError) {
+      setError(
+        workspaceError instanceof Error
+          ? workspaceError.message
+          : 'Failed to delete workspace.',
+      );
+    } finally {
+      setIsSavingWorkspaceMeta(false);
+    }
+  };
+
+  const handleAudioSummary = async () => {
+    if (!latestAssistantMessage) {
+      setError('Generate a summary first, then audio playback can read it aloud.');
+      return;
+    }
+
+    if (!canUsePremiumAudio) {
+      showUpgradePrompt('Audio Summary');
+      return;
+    }
+
+    if (!('speechSynthesis' in window)) {
+      setError('This browser does not support speech synthesis in the side panel.');
+      return;
+    }
+
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      setIsAudioPlaying(false);
+      setStatus('Audio playback stopped.');
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(latestAssistantMessage.content.slice(0, 8000));
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.onend = () => setIsAudioPlaying(false);
+    utterance.onerror = () => {
+      setIsAudioPlaying(false);
+      setError('Audio playback failed.');
+    };
+
+    setIsAudioPlaying(true);
+    setStatus('Reading the latest summary aloud...');
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+    await trackEvent('audio_summary_played', {
+      workspaceId: selectedWorkspace?.id,
+      videoCount: selectedVideoIds.length,
+    });
+  };
+
+  const openVideo = (videoId: string, startTime?: number) => {
+    const url = new URL(normalizeYouTubeUrl(videoId));
+    if (typeof startTime === 'number' && Number.isFinite(startTime) && startTime > 0) {
+      url.searchParams.set('t', `${Math.max(0, Math.floor(startTime))}s`);
+    }
+
+    window.open(url.toString(), '_blank', 'noopener,noreferrer');
+  };
+
   if (!activeTab.isYouTubeVideo && !hasUnlockedQueueWorkspace && !hasFocusedWorkspace) {
     return (
       <section className="panel-stack">
@@ -671,6 +769,25 @@ export function CopilotView() {
           </div>
           <div className="hero-actions">
             <button
+              className={`primary-button primary-button--ghost ${!canUsePremiumAudio ? 'primary-button--locked' : ''}`}
+              disabled={canUsePremiumAudio && (!latestAssistantMessage || pendingAction !== null)}
+              onClick={() => {
+                if (!canUsePremiumAudio) {
+                  showUpgradePrompt('Audio Summary');
+                  return;
+                }
+
+                void handleAudioSummary();
+              }}
+              type="button"
+            >
+              {canUsePremiumAudio
+                ? isAudioPlaying
+                  ? 'Stop Audio'
+                  : 'Play Audio Summary'
+                : 'Audio Summary Lock'}
+            </button>
+            <button
               className={`primary-button primary-button--ghost ${!canUseBatchWorkflows ? 'primary-button--locked' : ''}`}
               disabled={canUseBatchWorkflows && (!selectedWorkspace || !selectedVideos.length || !selectedTranscripts.length || pendingAction !== null)}
               onClick={() => {
@@ -729,6 +846,69 @@ export function CopilotView() {
           </div>
         </div>
       </div>
+
+      {selectedVideos.length ? (
+        <div className="panel-card">
+          <div className="section-header">
+            <div>
+              <h2 className="section-title">Workspace Sources</h2>
+              <p className="section-copy">
+                This is the actual set of videos and locally saved transcript memory attached to the current workspace.
+              </p>
+            </div>
+            <span className="status-chip status-chip--quiet">{selectedVideos.length} videos</span>
+          </div>
+
+          <div className="source-list">
+            {selectedVideos.map((video) => {
+              const transcript = transcriptByVideoId.get(video.id);
+              const previewSegments = transcript?.segments.filter((segment) => segment.text.trim()).slice(0, 3) ?? [];
+
+              return (
+                <article className="source-card" key={video.id}>
+                  <div className="source-card__header">
+                    <div>
+                      <span className="source-card__title">{video.title}</span>
+                      <span className="source-card__meta">
+                        {video.channel} · {transcript ? `${transcript.segments.length} transcript segments` : 'Transcript not synced yet'}
+                      </span>
+                    </div>
+                    <div className="source-card__actions">
+                      <button
+                        className="queue-action-button"
+                        onClick={() => openVideo(video.id)}
+                        type="button"
+                      >
+                        Open Video
+                      </button>
+                    </div>
+                  </div>
+
+                  {previewSegments.length ? (
+                    <div className="transcript-chip-row">
+                      {previewSegments.map((segment, index) => (
+                        <button
+                          className="transcript-chip"
+                          key={`${video.id}-${segment.start_time}-${index}`}
+                          onClick={() => openVideo(video.id, segment.start_time)}
+                          type="button"
+                        >
+                          <span className="transcript-chip__time">{formatTimestamp(segment.start_time)}</span>
+                          <span className="transcript-chip__text">{segment.text}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="section-copy">
+                      No transcript preview saved yet for this source.
+                    </p>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {selectedWorkspace ? (
         <div className="panel-card">
@@ -807,6 +987,16 @@ export function CopilotView() {
               >
                 {isSavingWorkspaceMeta ? 'Saving...' : 'Save Workspace Details'}
               </button>
+              {selectedWorkspace.id !== ACTIVE_QUEUE_WORKSPACE_ID ? (
+                <button
+                  className="queue-action-button queue-action-button--danger"
+                  disabled={isSavingWorkspaceMeta}
+                  onClick={handleDeleteWorkspace}
+                  type="button"
+                >
+                  Delete Workspace
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

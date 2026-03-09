@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 
 import { AI_PROVIDERS, PROVIDER_LABELS } from '../constants/providers';
 import { PREMIUM_PLACEHOLDER_URL } from '../constants/premium';
+import { STARTER_PROMPT_PRESETS } from '../constants/prompt-presets';
 import { SETTINGS_RECORD_ID, saveSettings } from '../db/settings';
 import { db } from '../db';
 import { signInWithGoogle, signOut, syncPremiumEntitlement } from '../services/auth';
@@ -144,6 +145,36 @@ export function SettingsView() {
           }
         : current,
     );
+  };
+
+  const addPromptPreset = (label: string, systemInstruction: string) => {
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const duplicate = current.customPrompts.some(
+        (prompt) =>
+          prompt.label.trim().toLowerCase() === label.trim().toLowerCase() &&
+          prompt.systemInstruction.trim() === systemInstruction.trim(),
+      );
+
+      if (duplicate) {
+        return current;
+      }
+
+      return {
+        ...current,
+        customPrompts: [
+          ...current.customPrompts,
+          {
+            id: createId(),
+            label,
+            systemInstruction,
+          },
+        ],
+      };
+    });
   };
 
   const handleSave = async () => {
@@ -300,7 +331,7 @@ export function SettingsView() {
             <div className="check-copy">
               <span className="field-label">Account state</span>
               <span className="section-copy">
-                Required for future sync and Stripe-based premium entitlements.
+                Required for future sync and Lemon Squeezy-based premium entitlements.
               </span>
             </div>
             <span className="status-chip">{draft.user ? 'Connected' : 'Local only'}</span>
@@ -315,7 +346,7 @@ export function SettingsView() {
             <p className="section-copy">
               Identity is the bridge between your local extension, future cloud sync,
               and the managed premium tier. This is the local placeholder until real OAuth
-              and Stripe entitlement sync land.
+              and Lemon Squeezy entitlement sync land.
             </p>
           </div>
           <span className="status-chip">{draft.user ? 'Signed In' : 'Signed Out'}</span>
@@ -357,7 +388,7 @@ export function SettingsView() {
         ) : (
           <div className="form-stack">
             <p className="section-copy">
-              Sign in to attach future Stripe subscriptions, sync saved workspaces across devices,
+              Sign in to attach future Lemon Squeezy subscriptions, sync saved workspaces across devices,
               and unlock premium batch workflows once billing is live.
             </p>
 
@@ -396,7 +427,9 @@ export function SettingsView() {
               you explicitly choose when you run the copilot.
             </p>
           </div>
-          <span className="status-chip status-chip--quiet">Local-only</span>
+          <span className="status-chip status-chip--quiet">
+            {draft.selectedProvider === 'ollama' ? 'Local-only' : 'BYO Key'}
+          </span>
         </div>
 
         <div className="segmented-control">
@@ -627,6 +660,19 @@ export function SettingsView() {
           </button>
         </div>
 
+        <div className="tag-row">
+          {STARTER_PROMPT_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              className="queue-action-button"
+              onClick={() => addPromptPreset(preset.label, preset.systemInstruction)}
+              type="button"
+            >
+              Use {preset.label}
+            </button>
+          ))}
+        </div>
+
         <div className="form-stack">
           {draft.customPrompts.length ? (
             draft.customPrompts.map((prompt) => (
@@ -656,7 +702,11 @@ export function SettingsView() {
                 </label>
 
                 <div className="prompt-card__footer">
-                  <span className="section-copy">Runs locally with your selected provider key.</span>
+                  <span className="section-copy">
+                    {draft.selectedProvider === 'ollama'
+                      ? 'Runs fully local through Ollama.'
+                      : 'Runs with your selected provider and your locally stored key.'}
+                  </span>
                   <button
                     className="queue-action-button"
                     onClick={() => deleteCustomPrompt(prompt.id)}
@@ -695,7 +745,7 @@ export function SettingsView() {
           onClick={openPremiumPortal}
           type="button"
         >
-          {draft.isPremium ? 'Manage Premium' : 'Upgrade to Premium Managed'}
+          {draft.isPremium ? 'Manage Premium' : 'Upgrade with Lemon Squeezy'}
         </button>
       </div>
 

@@ -1,5 +1,12 @@
 export type AIProvider = 'openai' | 'anthropic' | 'gemini' | 'ollama';
-export type DefaultSummaryMode = 'tldr' | 'action-items' | 'timestamped-highlights';
+export type DefaultSummaryMode =
+  | 'tldr'
+  | 'action-items'
+  | 'timestamped-highlights'
+  | 'study-notes'
+  | 'due-diligence'
+  | 'thread-draft'
+  | 'creator-research';
 export type SummaryMode = DefaultSummaryMode | `custom:${string}`;
 export type ThemeMode = 'dark' | 'light' | 'system';
 export type MessageRole = 'system' | 'user' | 'assistant';

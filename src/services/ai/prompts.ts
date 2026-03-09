@@ -20,7 +20,15 @@ export type SummaryPromptProfile = {
 };
 
 function isDefaultSummaryMode(mode: SummaryMode): mode is DefaultSummaryMode {
-  return mode === 'tldr' || mode === 'action-items' || mode === 'timestamped-highlights';
+  return (
+    mode === 'tldr' ||
+    mode === 'action-items' ||
+    mode === 'timestamped-highlights' ||
+    mode === 'study-notes' ||
+    mode === 'due-diligence' ||
+    mode === 'thread-draft' ||
+    mode === 'creator-research'
+  );
 }
 
 function buildCustomSummaryProfile(
@@ -98,6 +106,81 @@ export function resolveSummaryPromptProfile(
         chunkMaxOutputTokens: 1400,
         synthesisMaxOutputTokens: 1800,
         crossVideoMaxOutputTokens: 2200,
+      };
+    case 'study-notes':
+      return {
+        id: mode,
+        label: 'Study Notes',
+        systemInstruction: [
+          'You are Briefly, a YouTube study copilot.',
+          'Turn the transcript into durable notes for revision and later recall.',
+          'Organize concepts, definitions, arguments, and memorable examples clearly.',
+        ].join(' '),
+        chunkInstruction:
+          'Convert this transcript chunk into structured study notes with concepts, definitions, and memorable examples.',
+        synthesisInstruction:
+          'Create one final study sheet with sections, key ideas, and a short self-test checklist.',
+        crossVideoInstruction:
+          'Merge these videos into one coherent study guide. Call out repeated ideas, disagreements, and the most exam-worthy points.',
+        chunkMaxOutputTokens: 1400,
+        synthesisMaxOutputTokens: 1900,
+        crossVideoMaxOutputTokens: 2200,
+      };
+    case 'due-diligence':
+      return {
+        id: mode,
+        label: 'Due Diligence',
+        systemInstruction: [
+          'You are Briefly, a research and due-diligence copilot.',
+          'Extract claims, evidence, assumptions, risks, numbers, and unresolved questions.',
+          'Stay skeptical and grounded in the transcript only.',
+        ].join(' '),
+        chunkInstruction:
+          'Extract claims, supporting evidence, metrics, risks, assumptions, and open questions from this transcript chunk.',
+        synthesisInstruction:
+          'Produce a due-diligence brief with claims, evidence, risks, and unanswered questions.',
+        crossVideoInstruction:
+          'Compare these videos like a diligence analyst. Highlight overlapping claims, conflicts, weak evidence, and a bottom-line view.',
+        chunkMaxOutputTokens: 1500,
+        synthesisMaxOutputTokens: 2000,
+        crossVideoMaxOutputTokens: 2400,
+      };
+    case 'thread-draft':
+      return {
+        id: mode,
+        label: 'Thread Draft',
+        systemInstruction: [
+          'You are Briefly, a creator copilot.',
+          'Turn the transcript into a sharp social-thread draft.',
+          'Keep lines concise, high-signal, and suitable for a post thread.',
+        ].join(' '),
+        chunkInstruction:
+          'Extract the strongest ideas, hooks, and supporting details from this transcript chunk for a social-thread draft.',
+        synthesisInstruction:
+          'Write one concise thread-ready draft with a hook, 5 to 10 points, and a closing takeaway.',
+        crossVideoInstruction:
+          'Turn these videos into one comparison-driven thread with a strong hook, contrasts, and a clear conclusion.',
+        chunkMaxOutputTokens: 1200,
+        synthesisMaxOutputTokens: 1600,
+        crossVideoMaxOutputTokens: 1800,
+      };
+    case 'creator-research':
+      return {
+        id: mode,
+        label: 'Creator Brief',
+        systemInstruction: [
+          'You are Briefly, a creator research copilot.',
+          'Focus on hooks, narrative structure, repeated themes, audience angles, and differentiating ideas.',
+        ].join(' '),
+        chunkInstruction:
+          'Extract hook patterns, framing, structure, and content angles from this transcript chunk.',
+        synthesisInstruction:
+          'Produce a creator brief with hook ideas, structure notes, repeated angles, and content opportunities.',
+        crossVideoInstruction:
+          'Compare these videos as creator research. Identify repeated formulas, differentiators, topic gaps, and content opportunities.',
+        chunkMaxOutputTokens: 1300,
+        synthesisMaxOutputTokens: 1700,
+        crossVideoMaxOutputTokens: 2000,
       };
     default:
       return {

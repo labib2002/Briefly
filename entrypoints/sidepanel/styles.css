@@ -15,6 +15,10 @@
   --success: #4bd58b;
   --danger: #ff7a7a;
   --shadow: 0 26px 70px rgba(0, 0, 0, 0.34);
+  --topbar-bg: linear-gradient(155deg, rgba(17, 25, 35, 0.98), rgba(11, 16, 21, 0.92));
+  --hero-bg:
+    radial-gradient(circle at top left, rgba(255, 107, 61, 0.14), transparent 32%),
+    linear-gradient(145deg, rgba(17, 25, 35, 0.96), rgba(12, 18, 24, 0.9));
   font-family: Bahnschrift, Aptos, "Segoe UI Variable", "Segoe UI", sans-serif;
 }
 
@@ -33,6 +37,10 @@ body[data-theme='light'] {
   --accent-soft: rgba(212, 84, 44, 0.12);
   --accent-text: #7c2f13;
   --shadow: 0 22px 60px rgba(54, 39, 24, 0.15);
+  --topbar-bg: linear-gradient(155deg, rgba(255, 249, 241, 0.98), rgba(245, 235, 223, 0.94));
+  --hero-bg:
+    radial-gradient(circle at top left, rgba(212, 84, 44, 0.14), transparent 32%),
+    linear-gradient(145deg, rgba(255, 250, 242, 0.98), rgba(247, 238, 226, 0.94));
 }
 
 @media (prefers-color-scheme: light) {
@@ -51,6 +59,10 @@ body[data-theme='light'] {
     --accent-soft: rgba(212, 84, 44, 0.12);
     --accent-text: #7c2f13;
     --shadow: 0 22px 60px rgba(54, 39, 24, 0.15);
+    --topbar-bg: linear-gradient(155deg, rgba(255, 249, 241, 0.98), rgba(245, 235, 223, 0.94));
+    --hero-bg:
+      radial-gradient(circle at top left, rgba(212, 84, 44, 0.14), transparent 32%),
+      linear-gradient(145deg, rgba(255, 250, 242, 0.98), rgba(247, 238, 226, 0.94));
   }
 }
 
@@ -96,7 +108,7 @@ button {
   padding: 18px;
   border: 1px solid var(--border);
   border-radius: 24px;
-  background: linear-gradient(155deg, rgba(17, 25, 35, 0.98), rgba(11, 16, 21, 0.92));
+  background: var(--topbar-bg);
   box-shadow: var(--shadow);
 }
 
@@ -141,9 +153,7 @@ button {
 }
 
 .hero-card {
-  background:
-    radial-gradient(circle at top left, rgba(255, 107, 61, 0.14), transparent 32%),
-    linear-gradient(145deg, rgba(17, 25, 35, 0.96), rgba(12, 18, 24, 0.9));
+  background: var(--hero-bg);
 }
 
 .chat-card {
@@ -471,6 +481,11 @@ button {
   cursor: pointer;
 }
 
+.queue-action-button--danger {
+  border-color: rgba(255, 122, 122, 0.28);
+  color: var(--danger);
+}
+
 .queue-action-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -602,6 +617,76 @@ button {
   color: var(--accent-text);
   font-size: 12px;
   font-weight: 700;
+}
+
+.source-list {
+  display: grid;
+  gap: 12px;
+}
+
+.source-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.source-card__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.source-card__title {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.source-card__meta {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-card__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.transcript-chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.transcript-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.transcript-chip__time {
+  font-weight: 700;
+}
+
+.transcript-chip__text {
+  color: var(--muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer {

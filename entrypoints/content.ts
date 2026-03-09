@@ -39,7 +39,6 @@ type ScrapedTranscriptSegment = {
 type QueueInjectionHost = {
   host: ThumbnailWrapper;
   anchor: HTMLAnchorElement;
-  overflowTargets: HTMLElement[];
 };
 type ContentScriptResponse<T> =
   | { ok: true; data: T }
@@ -60,7 +59,6 @@ function injectStyles() {
     ytd-thumbnail.briefly-queue-wrapper,
     yt-lockup-view-model.briefly-queue-wrapper {
       position: relative !important;
-      overflow: visible !important;
     }
 
     .briefly-playlist-action-row {
@@ -152,11 +150,6 @@ function getLegacyQueueHosts(): QueueInjectionHost[] {
       return {
         host,
         anchor,
-        overflowTargets: [
-          host,
-          anchor,
-          anchor.querySelector<HTMLElement>('img')?.parentElement ?? null,
-        ].filter((target): target is HTMLElement => Boolean(target)),
       } satisfies QueueInjectionHost;
     })
     .filter((host): host is QueueInjectionHost => Boolean(host));
@@ -174,12 +167,6 @@ function getModernQueueHosts(): QueueInjectionHost[] {
       return {
         host,
         anchor,
-        overflowTargets: [
-          host,
-          anchor,
-          anchor.querySelector<HTMLElement>('yt-thumbnail-view-model') ?? null,
-          anchor.querySelector<HTMLElement>('.ytThumbnailViewModelImage') ?? null,
-        ].filter((target): target is HTMLElement => Boolean(target)),
       } satisfies QueueInjectionHost;
     })
     .filter((host): host is QueueInjectionHost => Boolean(host));
@@ -399,9 +386,6 @@ function createQueueButton(
 }
 
 function forceQueueVisibility(host: QueueInjectionHost) {
-  host.overflowTargets.forEach((target) => {
-    target.style.setProperty('overflow', 'visible', 'important');
-  });
   host.host.style.setProperty('position', 'relative', 'important');
   host.anchor.style.setProperty('position', 'relative', 'important');
 }

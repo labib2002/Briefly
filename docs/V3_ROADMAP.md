@@ -53,7 +53,7 @@ The durable value comes from:
 ### Stage 2: Monetization Readiness
 
 - real Google OAuth
-- Stripe Checkout
+- Lemon Squeezy checkout
 - entitlement sync API
 - subscription-aware feature gating
 - telemetry pipeline
@@ -78,7 +78,7 @@ The durable value comes from:
 These cannot be fully completed inside the extension alone:
 
 - Google OAuth credentials and approved extension origin
-- Stripe products, prices, and webhook endpoint
+- Lemon Squeezy products, checkout link, and webhook endpoint
 - backend for entitlement sync and cloud persistence
 - telemetry ingestion endpoint
 

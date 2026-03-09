@@ -48,7 +48,7 @@ Response:
 
 ### `POST /billing/checkout`
 
-Creates a Stripe Checkout session for the signed-in user.
+Creates a Lemon Squeezy checkout session or hosted checkout link for the signed-in user.
 
 Request:
 
@@ -63,7 +63,7 @@ Response:
 
 ```json
 {
-  "checkoutUrl": "https://checkout.stripe.com/..."
+  "checkoutUrl": "https://briefly.lemonsqueezy.com/checkout/..."
 }
 ```
 

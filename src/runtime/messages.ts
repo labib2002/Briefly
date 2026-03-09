@@ -8,6 +8,10 @@ const summaryModeSchema = z.custom<SummaryMode>(
     (value === 'tldr' ||
       value === 'action-items' ||
       value === 'timestamped-highlights' ||
+      value === 'study-notes' ||
+      value === 'due-diligence' ||
+      value === 'thread-draft' ||
+      value === 'creator-research' ||
       /^custom:.+$/.test(value)),
   {
     message: 'Invalid summary mode.',

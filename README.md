@@ -92,7 +92,7 @@ Cloud API keys remain local to the extension database. Ollama runs against a loc
 Some surfaces are intentionally still placeholders:
 
 - Google sign-in is not wired to real OAuth yet
-- Premium upgrade is not wired to real Stripe Checkout yet
+- Premium upgrade is not wired to real Lemon Squeezy billing yet
 - Premium entitlement sync is not backed by a real server yet
 - Telemetry is structured but still uses a local stub transport
 
