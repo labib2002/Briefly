@@ -1,8 +1,30 @@
 {
-  "name": "youtube-caption-fetcher",
-  "version": "1.0.0",
-  "description": "A browser extension to fetch youtube captions.",
+  "name": "briefly",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Briefly is a persistent YouTube research copilot built as a Chrome side panel extension.",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "compile": "tsc --noEmit"
+  },
   "dependencies": {
-    "youtubei.js": "^8.0.0"
+    "dexie": "^4.0.10",
+    "dexie-react-hooks": "^1.1.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "youtubei.js": "^16.0.1",
+    "zod": "^3.24.2",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.304",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@wxt-dev/module-react": "^1.1.5",
+    "typescript": "^5.7.2",
+    "wxt": "0.19.29"
   }
 }

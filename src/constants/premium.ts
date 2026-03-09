@@ -1,0 +1,1 @@
+export const PREMIUM_PLACEHOLDER_URL = 'https://briefly.app/premium';

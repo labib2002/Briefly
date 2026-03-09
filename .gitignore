@@ -22,6 +22,8 @@ Thumbs.db
 *.7z
 node_modules/
 dist/
+.wxt/
+.output/
 *.crx
 
 # VSCode

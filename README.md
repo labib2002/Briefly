@@ -1,117 +1,109 @@
-<p align="center">
-  <img src="icons/briefly-128.png" alt="Briefly logo" width="128">
-</p>
+# Briefly
 
-# Briefly ⚡️
+Briefly is a persistent Chrome side-panel extension for turning YouTube videos, playlists, and queued research sets into a searchable local knowledge base.
 
-Summarize YouTube videos instantly — right from your browser.
+The product has moved beyond the legacy popup summarizer. The current architecture is built around:
 
-Skip the video, keep the value. With one right-click or through the extension popup, Briefly pulls the transcript for the current YouTube video. It can copy the transcript to your clipboard or auto-summarize it using Google’s Gemini in AI Studio. Perfect for research, note-taking, or just staying informed — without the watch time.
+- `WXT + React + TypeScript`
+- `Chrome Side Panel API`
+- `Dexie / IndexedDB` for local-first persistence
+- `provider-agnostic AI routing` for `Gemini`, `OpenAI`, `Anthropic`, and `Ollama`
+- `page-context transcript scraping` for active YouTube videos
 
-[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
+## Current Product Surface
 
----
+- Active-video transcript sync from the live YouTube page
+- Persistent workspace memory for each video
+- Batch queue for multi-video synthesis
+- Playlist ingestion from YouTube
+- Global search across saved videos, transcripts, and chat history
+- Custom prompt profiles
+- Markdown export
+- Premium gating groundwork
+- Local-model support through Ollama
 
-## Features
+## What Briefly Is Becoming
 
-| Action | What happens |
-| ------ | ------------ |
-| **Get & Copy Transcript** | Uses a bundled JavaScript library (based on `youtube-transcript-api`) directly in the extension → fetches the full transcript (with preferred language logic) → copies it to your clipboard via Chrome’s Offscreen API. |
-| **Summarise in AI Studio** | Same transcript fetching method → opens `aistudio.google.com` → pastes a pre-defined prompt + transcript → attempts to selects preferred model → disables/enables preferred “Thinking mode” → clicks **Run**. |
+Briefly is being productized into a YouTube research OS for:
 
----
+- students processing lecture playlists
+- founders and analysts tracking markets and competitors
+- creators studying channels and recurring topics
+- knowledge workers building reusable research memory from video
 
-| Feature | info         |
-| ------  | ------------ |
-| **Popup Interface** | Access core actions (copy, summarize) for the active YouTube tab directly from the extension icon. |
-| **Robust notifications** | API / network / automation errors bubble up clearly. |
-| **Cross-platform** | works on Chrome, Edge, Brave, etc. (Manifest v3). |
+The end-state is not "summarize this one video." The end-state is:
 
----
+- ingest
+- synthesize
+- search
+- cite
+- export
+- monitor
 
-## Quick Start
+## Architecture
 
-### 1 ▪ Clone
+### Extension runtime
+
+- `entrypoints/background.ts`
+  Handles runtime messages, transcript ingestion, summarization requests, queue management, and workspace orchestration.
+- `entrypoints/content.ts`
+  Injects queue controls into YouTube and scrapes active-watch-page transcripts directly from the DOM.
+- `entrypoints/sidepanel/*`
+  Hosts the persistent research UI.
+
+### Data model
+
+- `videos`
+- `transcripts`
+- `workspaces`
+- `settings`
+
+The storage model is local-first and structured so a future sync layer can mirror records to a backend without redefining the core entities.
+
+## Local Development
 
 ```bash
-git clone https://github.com/labib2002/briefly.git
-cd briefly
+npm install
+npm run compile
+npm run build
 ```
 
-### 2 ▪ Load the extension
+For iterative development:
 
-1. Open `chrome://extensions` (or the equivalent for your browser, e.g., `edge://extensions`).
-2. Turn on **Developer mode**.
-3. Click **Load unpacked** → select the `briefly` project folder (the one containing `manifest.json`).
+```bash
+npm run dev
+```
 
----
+Then load the generated extension in `chrome://extensions`.
 
-## Usage
+## Providers
 
-1.  Navigate to a YouTube video page (`youtube.com/watch?...`, `youtu.be/...`, `youtube.com/shorts/...`).
-2.  **Option 1: Context Menu**
-    *   Right-click any YouTube video link on a webpage.
-    *   Choose:
-        *   **Briefly: Get & Copy Transcript Text**
-        *   **Briefly: Automate Summary in AI Studio**
-3.  **Option 2: Extension Popup**
-    *   While on a YouTube video page, click the Briefly extension icon in your browser toolbar.
-    *   Click either **Copy Transcript** or **Summarize in AI Studio**.
-4.  Read the notification that appears. If you picked AI Studio, switch to the new tab and watch Gemini work its magic.
+Briefly currently supports:
 
----
+- Google Gemini
+- OpenAI
+- Anthropic
+- Ollama
 
-## Configuration
+Cloud API keys remain local to the extension database. Ollama runs against a local endpoint such as `http://localhost:11434`.
 
-| File                             | What to tweak                                                                 |
-| -------------------------------- | ----------------------------------------------------------------------------- |
-| **`background.js`**              | `PREFERRED_LANGUAGES` array, `promptText` template for AI Studio, AI Studio automation time-outs. |
-| **`content_script_aistudio.js`** | CSS selectors for AI Studio elements & default model name string (e.g., "Gemini 2.5 Flash Preview"). |
+## Current Limits
 
----
+Some surfaces are intentionally still placeholders:
 
-## Troubleshooting 🛠️
+- Google sign-in is not wired to real OAuth yet
+- Premium upgrade is not wired to real Stripe Checkout yet
+- Premium entitlement sync is not backed by a real server yet
+- Telemetry is structured but still uses a local stub transport
 
-| Symptom                                                | Likely cause / fix                                                                                              |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| **Transcript unavailable / error fetching transcript** | Uploader disabled transcripts, no transcripts in your `PREFERRED_LANGUAGES` (see `background.js`), or a temporary YouTube issue. Check the Service Worker console. |
-| **Automation stalls or fails in AI Studio**            | Google’s AI Studio UI might have changed – adjust selectors in `content_script_aistudio.js`. Use DevTools console in the AI Studio tab to inspect errors. The target model ("Gemini 2.5 Flash Preview") might also be unavailable or renamed. |
-| **Clipboard error**                                    | Rare; open the extension’s *Service worker* console in `chrome://extensions` for details.                       |
-| **Buttons in popup are disabled**                      | Ensure you are on an active YouTube video page (`youtube.com/watch`, `youtu.be`, `youtube.com/shorts`).        |
+Those are productization tasks, not architectural unknowns.
 
----
+## Roadmap
 
-* **Service worker logs (for background tasks, transcript fetching)** → `chrome://extensions` → find Briefly → click *Service worker*.
-* **Content-script logs (for AI Studio automation)** → Open DevTools (F12) console in the AI Studio tab.
-* **Popup logs (for popup UI issues)** → Right-click the extension icon → *Inspect popup* → Console tab.
+The concrete v3 roadmap is in [docs/V3_ROADMAP.md](/C:/Users/lenovo/Downloads/Briefly-main/docs/V3_ROADMAP.md).
 
----
+The external auth, billing, sync, and telemetry contracts are in [docs/INTEGRATION_CONTRACTS.md](/C:/Users/lenovo/Downloads/Briefly-main/docs/INTEGRATION_CONTRACTS.md).
 
-## Roadmap / Future Ideas
+## Legacy v1
 
-* [ ] **Direct Gemini API Integration** – Add option for Google’s public Gemini API (or Vertex AI) directly, bypassing AI Studio UI automation for a faster and more reliable summarization.
-* [ ] **Enhanced Popup / Options UI** – Allow users to customize preferred languages, edit the AI Studio prompt, select different summarization models, and toggle other features through a dedicated options page or an enhanced popup.
-* [X] **Process Current Video via Popup** – One-click actions in the extension popup to process the video in the active tab (Implemented in v1.4).
-* [ ] **Standalone Application** – Package Briefly as a desktop application, removing the need for a browser extension (e.g., using Electron or similar).
-* [ ] **Local LLM Support** – Send transcripts to a locally running LLM (e.g., via Ollama / GGUF models) for offline summaries.
-* [ ] **Internationalisation (i18n)** – Translate extension UI text and default prompts into multiple languages.
-* [ ] **Customizable Summarization Profiles** – Allow users to define and switch between different summarization styles or lengths (e.g., "brief overview," "detailed points," "key takeaways").
-* [ ] **Support for more video platforms** – Extend transcript and summarization capabilities to other platforms beyond YouTube.
-
-*Pull-requests welcome – open an issue first so we don’t duplicate work!*
-
----
-
-## Contributing
-
-1. **Fork** → branch → PR (use [Conventional Commits](https://www.conventionalcommits.org)).
-2. First-timers welcome – check **good-first-issue**.
-
----
-
-## License
-
-Released under the **MIT License** – see [`LICENSE.md`](LICENSE.md).
-
-> The core logic for fetching YouTube transcripts is derived from the excellent
-[youtube-transcript-api](https://pypi.org/project/youtube-transcript-api/) Py library, adapted for direct use within the browser extension.
+The original popup-based implementation was archived to [archive_legacy_v1](/C:/Users/lenovo/Downloads/Briefly-main/archive_legacy_v1) for reference.
