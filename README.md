@@ -111,7 +111,7 @@ archive_legacy_v1/       the original popup-based v1, kept for reference
 - API keys are stored locally and sent only to the provider you configured.
 - Telemetry is disabled by default: the event pipeline exists, but no endpoint is configured unless you build with `WXT_TELEMETRY_ENDPOINT` set (and the in-app toggle is respected either way).
 
-## Honest status
+## Status
 
 This is a working v2, not a finished product. Known limits:
 
