@@ -10,7 +10,7 @@ export const PROVIDER_LABELS: Record<AIProvider, string> = {
 };
 
 export const DEFAULT_PROVIDER_MODELS: Record<AIProvider, string> = {
-  gemini: 'gemini-2.5-flash',
+  gemini: 'gemini-3.5-flash',
   openai: 'gpt-4.1-mini',
   anthropic: 'claude-sonnet-5',
   ollama: 'llama3',

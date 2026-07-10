@@ -50,7 +50,7 @@ Open the side panel (click the Briefly toolbar icon on any YouTube page), go to 
 
 | Provider | Default model | Notes |
 | --- | --- | --- |
-| Google Gemini | `gemini-2.5-flash` | |
+| Google Gemini | `gemini-3.5-flash` | |
 | OpenAI | `gpt-4.1-mini` | Also powers optional TTS audio briefings (`gpt-4o-mini-tts`) |
 | Anthropic | `claude-sonnet-5` | Sampling parameters are intentionally omitted (Sonnet 5 rejects non-default values) |
 | Ollama | `llama3` | Local endpoint, default `http://localhost:11434` |
