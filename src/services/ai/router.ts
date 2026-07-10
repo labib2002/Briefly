@@ -129,7 +129,8 @@ async function generateWithAnthropic(
         max_tokens: input.maxOutputTokens ?? 2048,
         messages,
         system: systemPrompt || undefined,
-        temperature: input.temperature ?? 0.2,
+        // Claude Sonnet 5 rejects non-default sampling parameters (temperature/top_p/top_k),
+        // so the Anthropic request intentionally omits them.
       }),
     ),
   });
