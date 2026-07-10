@@ -30,77 +30,54 @@ import {
 } from '../src/runtime/messages';
 import { generateWorkspaceSummary } from '../src/services/summarization';
 import { trackEvent } from '../src/services/telemetry';
+import { appendTranscriptDebugEntry } from '../src/services/transcript-debug';
 import {
-  type IngestedTranscriptPayload,
-  ingestTranscriptFromUrl,
   saveScrapedTranscript,
 } from '../src/services/transcript-ingestion';
+import {
+  clearQueueRunnerTabReference,
+  ensureTranscriptForUrl,
+  runTranscriptCanaryCheck,
+} from '../src/services/transcript-orchestrator';
+import {
+  refreshTranscriptRuntimeConfig,
+  TRANSCRIPT_CANARY_ALARM,
+  TRANSCRIPT_CONFIG_ALARM,
+  getTranscriptRuntimeConfig,
+} from '../src/services/transcript-runtime';
 import type { VideoRecord } from '../src/types/domain';
-import { extractYouTubeVideoId, normalizeYouTubeUrl } from '../src/utils/youtube';
+import { normalizeYouTubeUrl } from '../src/utils/youtube';
 import { answerWorkspaceChat } from '../src/services/workspace-chat';
 import { getSettings } from '../src/db/settings';
 
-type ContentScriptResponse<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: string };
+const STARTUP_CANARY_LAST_RUN_STORAGE_KEY = 'briefly.transcriptStartupCanaryLastRunAt';
+const STARTUP_CANARY_MIN_INTERVAL_MS = 30 * 60 * 1000;
 
 async function handleRuntimeMessage(
   message: RuntimeRequest,
+  sender?: chrome.runtime.MessageSender,
 ): Promise<RuntimeResponse<unknown>> {
   try {
     switch (message.type) {
       case 'briefly/ingest-transcript': {
         const validated = ingestTranscriptRequestSchema.parse(message);
-        const videoId = extractYouTubeVideoId(validated.url);
-        let payload: IngestedTranscriptPayload | undefined;
-
-        if (videoId && !validated.forceRefresh) {
-          const [existingVideo, existingTranscript] = await Promise.all([
-            db.videos.get(videoId),
-            db.transcripts.get(videoId),
-          ]);
-
-          if (existingVideo && existingTranscript) {
-            payload = {
-              video: existingVideo,
-              transcript: existingTranscript,
-            };
-          }
-        }
-
-        if (!payload && validated.tabId !== undefined) {
-          try {
-            const scrapeResult = (await chrome.tabs.sendMessage(validated.tabId, {
-              type: 'briefly/scrape-active-transcript',
-            })) as ContentScriptResponse<{ videoId: string }>;
-
-            if (scrapeResult?.ok && scrapeResult.data.videoId) {
-              const [video, transcript] = await Promise.all([
-                db.videos.get(scrapeResult.data.videoId),
-                db.transcripts.get(scrapeResult.data.videoId),
-              ]);
-
-              if (!video || !transcript) {
-                throw new Error('Scraped transcript was saved incompletely.');
-              }
-
-              payload = {
-                video,
-                transcript,
-              };
-            } else if (scrapeResult && !scrapeResult.ok) {
-              throw new Error(scrapeResult.error);
-            }
-          } catch (error) {
-            throw new Error(
-              `Active-tab transcript scraping failed: ${error instanceof Error ? error.message : 'unknown error'}`,
-            );
-          }
-        }
-
-        if (!payload) {
-          payload = await ingestTranscriptFromUrl(validated.url, validated.forceRefresh);
-        }
+        const inferredTabId =
+          validated.tabId ??
+          (typeof sender?.tab?.id === 'number' ? sender.tab.id : undefined);
+        await appendTranscriptDebugEntry({
+          context: 'background',
+          step: 'Received transcript ingest request.',
+          data: {
+            url: validated.url,
+            tabId: inferredTabId,
+            forceRefresh: validated.forceRefresh ?? false,
+          },
+        });
+        const payload = await ensureTranscriptForUrl({
+          url: validated.url,
+          activeTabId: inferredTabId,
+          forceRefresh: validated.forceRefresh,
+        });
         const workspace = await getOrCreateVideoWorkspace(payload.video.id);
         return {
           ok: true,
@@ -179,12 +156,16 @@ async function handleRuntimeMessage(
       }
       case 'briefly/get-client-config': {
         getClientConfigRequestSchema.parse(message);
-        const settings = await getSettings();
+        const [settings, runtimeConfig] = await Promise.all([
+          getSettings(),
+          getTranscriptRuntimeConfig(),
+        ]);
         return {
           ok: true,
           data: {
             isPremium: settings.isPremium,
             featureFlags: settings.featureFlags,
+            selectorOverrides: runtimeConfig.selectorOverrides,
           },
         };
       }
@@ -255,6 +236,14 @@ async function handleRuntimeMessage(
       }
       case 'briefly/save-scraped-transcript': {
         const validated = saveScrapedTranscriptRequestSchema.parse(message);
+        await appendTranscriptDebugEntry({
+          context: 'background',
+          step: 'Persisting scraped transcript from content script.',
+          data: {
+            videoId: validated.videoId,
+            segmentCount: validated.segments.length,
+          },
+        });
         const payload = await saveScrapedTranscript(validated);
         const workspace = await getOrCreateVideoWorkspace(payload.video.id);
         return {
@@ -282,6 +271,38 @@ async function handleRuntimeMessage(
 export default defineBackground({
   type: 'module',
   main() {
+    const runStartupCanaryCheck = async () => {
+      const stored = await chrome.storage.session.get(STARTUP_CANARY_LAST_RUN_STORAGE_KEY);
+      const lastRunAt =
+        typeof stored[STARTUP_CANARY_LAST_RUN_STORAGE_KEY] === 'number'
+          ? stored[STARTUP_CANARY_LAST_RUN_STORAGE_KEY]
+          : 0;
+
+      if (Date.now() - lastRunAt < STARTUP_CANARY_MIN_INTERVAL_MS) {
+        return;
+      }
+
+      await chrome.storage.session.set({
+        [STARTUP_CANARY_LAST_RUN_STORAGE_KEY]: Date.now(),
+      });
+      await runTranscriptCanaryCheck();
+    };
+
+    const scheduleTranscriptRuntime = async () => {
+      try {
+        await chrome.alarms.create(TRANSCRIPT_CONFIG_ALARM, {
+          periodInMinutes: 60,
+        });
+        await chrome.alarms.create(TRANSCRIPT_CANARY_ALARM, {
+          periodInMinutes: 360,
+        });
+        await refreshTranscriptRuntimeConfig();
+        await runStartupCanaryCheck();
+      } catch (error) {
+        console.error('Briefly failed to initialize transcript runtime.', error);
+      }
+    };
+
     const enableSidePanel = async () => {
       try {
         await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -292,9 +313,10 @@ export default defineBackground({
 
     chrome.runtime.onInstalled.addListener(() => {
       void enableSidePanel();
+      void scheduleTranscriptRuntime();
     });
 
-    chrome.runtime.onMessage.addListener((rawMessage, _sender, sendResponse) => {
+    chrome.runtime.onMessage.addListener((rawMessage, sender, sendResponse) => {
       const parsed = runtimeRequestSchema.safeParse(rawMessage);
 
       if (!parsed.success) {
@@ -305,10 +327,58 @@ export default defineBackground({
         return false;
       }
 
-      void handleRuntimeMessage(parsed.data).then(sendResponse);
+      void handleRuntimeMessage(parsed.data, sender).then(sendResponse);
       return true;
     });
 
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === TRANSCRIPT_CONFIG_ALARM) {
+        void refreshTranscriptRuntimeConfig();
+      }
+
+      if (alarm.name === TRANSCRIPT_CANARY_ALARM) {
+        void runTranscriptCanaryCheck();
+      }
+    });
+
+    chrome.tabs.onRemoved.addListener((tabId) => {
+      void clearQueueRunnerTabReference(tabId);
+    });
+
+    chrome.webNavigation.onHistoryStateUpdated.addListener(
+      (details) => {
+        if (details.frameId !== 0 || !details.url?.includes('/watch?v=')) {
+          return;
+        }
+
+        window.setTimeout(() => {
+          void chrome.tabs
+            .sendMessage(details.tabId, {
+              type: 'briefly/proactive-sync-active-video',
+            })
+            .catch(async () => {
+              try {
+                await ensureTranscriptForUrl({
+                  url: details.url!,
+                  activeTabId: details.tabId,
+                });
+              } catch {
+                // The content script path remains the preferred proactive sync surface.
+              }
+            });
+        }, 600);
+      },
+      {
+        url: [
+          {
+            hostContains: 'youtube.com',
+            pathPrefix: '/watch',
+          },
+        ],
+      },
+    );
+
     void enableSidePanel();
+    void scheduleTranscriptRuntime();
   },
 });

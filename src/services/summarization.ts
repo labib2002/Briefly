@@ -20,7 +20,7 @@ import {
 } from './ai/prompts';
 import { generateText } from './ai/router';
 import { trackEvent } from './telemetry';
-import { ingestTranscriptByVideoId } from './transcript-ingestion';
+import { ensureTranscriptsForVideoIds } from './transcript-orchestrator';
 
 const TARGET_CHUNK_CHARS = 12000;
 const MAX_CHAT_TRANSCRIPT_CHARS = 18000;
@@ -131,11 +131,15 @@ export async function generateWorkspaceSummary(input: {
   videoIds: string[];
   summaryMode: SummaryMode;
   provider?: AIProvider;
+  tabId?: number;
 }): Promise<{ workspace: WorkspaceRecord; message: ChatMessage }> {
   const settings = await getSettings();
   const promptProfile = resolveSummaryPromptProfile(input.summaryMode, settings.customPrompts);
   const transcripts = (
-    await Promise.all(input.videoIds.map((videoId) => ingestTranscriptByVideoId(videoId)))
+    await ensureTranscriptsForVideoIds({
+      videoIds: input.videoIds,
+      activeTabId: input.tabId,
+    })
   ).map((payload) => payload.transcript);
 
   if (!transcripts.length) {

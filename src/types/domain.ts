@@ -36,8 +36,10 @@ export type TranscriptSegment = {
 
 export type TranscriptMetadata = {
   source:
+    | 'youtube-active-caption-track'
     | 'youtube-watch-page'
-    | 'youtube-player-endpoint'
+    | 'youtube-player-endpoint-android'
+    | 'youtube-player-endpoint-tv'
     | 'youtube-embed-page'
     | 'youtube-dom-scrape'
     | 'youtubei.js';

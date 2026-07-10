@@ -2,7 +2,14 @@ import { getSettings } from '../db/settings';
 
 export type TelemetryProperties = Record<string, unknown>;
 
-const TELEMETRY_ENDPOINT = '';
+const TELEMETRY_ENDPOINT =
+  (
+    import.meta as ImportMeta & {
+      env?: {
+        WXT_TELEMETRY_ENDPOINT?: string;
+      };
+    }
+  ).env?.WXT_TELEMETRY_ENDPOINT?.trim() ?? '';
 const isDevelopment = Boolean(
   (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV,
 );

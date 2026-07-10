@@ -1,5 +1,13 @@
 import type { TranscriptRecord, TranscriptSegment, VideoRecord } from '../types/domain';
 import { normalizeYouTubeUrl } from '../utils/youtube';
+import {
+  CaptionFetchError,
+  fetchCaptionTrackSegments as fetchSharedCaptionTrackSegments,
+} from './caption-payload';
+import {
+  resolveCaptionTrackSelection,
+} from './caption-track-utils';
+import { recordTranscriptNetworkRequest } from './transcript-health';
 
 type CaptionTrack = {
   baseUrl?: string;
@@ -18,9 +26,13 @@ type PlayerResponse = {
   captions?: {
     playerCaptionsTracklistRenderer?: {
       captionTracks?: CaptionTrack[];
+      translationLanguages?: Array<{
+        languageCode?: string;
+      }>;
     };
   };
   videoDetails?: {
+    videoId?: string;
     title?: string;
     author?: string;
   };
@@ -38,13 +50,14 @@ type YtConfig = {
 
 type TranscriptSource =
   | 'youtube-watch-page'
-  | 'youtube-player-endpoint'
-  | 'youtube-embed-page';
+  | 'youtube-player-endpoint-android'
+  | 'youtube-player-endpoint-tv';
 
 type TranscriptAttempt = {
   source: TranscriptSource;
   playerResponse: PlayerResponse | null;
   track: CaptionTrack | null;
+  targetLanguageCode?: string;
 };
 
 function getTimestamp(): number {
@@ -53,22 +66,6 @@ function getTimestamp(): number {
 
 function getVideoUrl(videoId: string): string {
   return `${normalizeYouTubeUrl(videoId)}&hl=en`;
-}
-
-function getEmbedUrl(videoId: string): string {
-  return `https://www.youtube.com/embed/${videoId}?hl=en`;
-}
-
-function getCaptionTrackName(track: CaptionTrack): string {
-  if (track.name?.simpleText) {
-    return track.name.simpleText;
-  }
-
-  return track.name?.runs?.map((run) => run.text ?? '').join('').trim() ?? '';
-}
-
-function normalizeSegmentText(input: string): string {
-  return input.replace(/\s+/g, ' ').trim();
 }
 
 function parseJsonObject<T>(input: string, marker: string): T | null {
@@ -172,261 +169,10 @@ function extractYtConfig(html: string): YtConfig {
   };
 }
 
-function selectCaptionTrack(
-  tracks: CaptionTrack[] | undefined,
-): CaptionTrack | null {
-  if (!tracks?.length) {
-    return null;
-  }
-
-  const rankedTracks = [...tracks].sort((left, right) => {
-    const score = (track: CaptionTrack) => {
-      const language = track.languageCode ?? '';
-      const name = getCaptionTrackName(track).toLowerCase();
-      let total = 0;
-
-      if (language.startsWith('en')) {
-        total += 4;
-      }
-
-      if (track.kind !== 'asr') {
-        total += 3;
-      }
-
-      if (name.includes('english')) {
-        total += 2;
-      }
-
-      if (track.vssId?.includes('.en')) {
-        total += 1;
-      }
-
-      return total;
-    };
-
-    return score(right) - score(left);
-  });
-
-  return rankedTracks[0] ?? null;
-}
-
-function getCaptionTrackUrl(track: CaptionTrack): string {
-  if (!track.baseUrl) {
-    throw new Error('YouTube caption track is missing a base URL.');
-  }
-
-  const url = new URL(track.baseUrl);
-  url.searchParams.set('fmt', 'json3');
-  return url.toString();
-}
-
-function getRawCaptionTrackUrl(track: CaptionTrack): string {
-  if (!track.baseUrl) {
-    throw new Error('YouTube caption track is missing a base URL.');
-  }
-
-  const url = new URL(track.baseUrl);
-  url.searchParams.delete('fmt');
-  return url.toString();
-}
-
-function mapJson3EventsToSegments(payload: unknown): TranscriptSegment[] {
-  if (!payload || typeof payload !== 'object' || !('events' in payload) || !Array.isArray(payload.events)) {
-    return [];
-  }
-
-  return payload.events
-    .map((event) => {
-      if (!event || typeof event !== 'object') {
-        return null;
-      }
-
-      const typedEvent = event as {
-        tStartMs?: number;
-        dDurationMs?: number;
-        segs?: Array<{ utf8?: string }>;
-      };
-      const text = normalizeSegmentText(
-        (typedEvent.segs ?? [])
-          .map((segment) => segment.utf8 ?? '')
-          .join(''),
-      );
-
-      if (!text) {
-        return null;
-      }
-
-      return {
-        text,
-        start_time: Number(typedEvent.tStartMs ?? 0) / 1000,
-        duration: Math.max(Number(typedEvent.dDurationMs ?? 0) / 1000, 0),
-      } satisfies TranscriptSegment;
-    })
-    .filter((segment): segment is TranscriptSegment => Boolean(segment));
-}
-
-function decodeHtmlEntities(input: string): string {
-  return input
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#([0-9]+);/g, (_, num: string) => String.fromCodePoint(parseInt(num, 10)));
-}
-
-function parseXmlTranscriptSegments(payload: string): TranscriptSegment[] {
-  const segments: TranscriptSegment[] = [];
-  const pattern = /<text\b([^>]*)>([\s\S]*?)<\/text>/g;
-
-  for (const match of payload.matchAll(pattern)) {
-    const attributes = match[1] ?? '';
-    const startMatch = attributes.match(/\bstart="([^"]+)"/);
-    const durationMatch = attributes.match(/\bdur="([^"]+)"/);
-    const rawText = decodeHtmlEntities(match[2] ?? '').replace(/<br\s*\/?>/gi, ' ');
-    const text = normalizeSegmentText(rawText);
-
-    if (!text) {
-      continue;
-    }
-
-    segments.push({
-      text,
-      start_time: Number(startMatch?.[1] ?? 0),
-      duration: Math.max(Number(durationMatch?.[1] ?? 0), 0),
-    });
-  }
-
-  return segments;
-}
-
-function parseVttTimestamp(input: string): number {
-  const normalized = input.trim().replace(',', '.');
-  const parts = normalized.split(':').map((part) => Number(part));
-
-  if (parts.some((value) => Number.isNaN(value))) {
-    return 0;
-  }
-
-  if (parts.length === 3) {
-    return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
-  }
-
-  if (parts.length === 2) {
-    return (parts[0] * 60) + parts[1];
-  }
-
-  return parts[0] ?? 0;
-}
-
-function parseVttTranscriptSegments(payload: string): TranscriptSegment[] {
-  const blocks = payload
-    .split(/\r?\n\r?\n/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-  const segments: TranscriptSegment[] = [];
-
-  for (const block of blocks) {
-    if (block.startsWith('WEBVTT')) {
-      continue;
-    }
-
-    const lines = block.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const timingLine = lines.find((line) => line.includes('-->'));
-
-    if (!timingLine) {
-      continue;
-    }
-
-    const [startRaw, endRaw] = timingLine.split('-->').map((part) => part.trim());
-    const textLines = lines.slice(lines.indexOf(timingLine) + 1);
-    const text = normalizeSegmentText(textLines.join(' '));
-
-    if (!text) {
-      continue;
-    }
-
-    const start = parseVttTimestamp(startRaw);
-    const end = parseVttTimestamp(endRaw.split(' ')[0] ?? endRaw);
-
-    segments.push({
-      text,
-      start_time: start,
-      duration: Math.max(end - start, 0),
-    });
-  }
-
-  return segments;
-}
-
-function parseCaptionPayload(payload: string): TranscriptSegment[] {
-  const trimmed = payload.trim();
-
-  if (!trimmed) {
-    return [];
-  }
-
-  if (trimmed.startsWith('{')) {
-    try {
-      return mapJson3EventsToSegments(JSON.parse(trimmed) as unknown);
-    } catch {
-      return [];
-    }
-  }
-
-  if (trimmed.startsWith('<')) {
-    return parseXmlTranscriptSegments(trimmed);
-  }
-
-  if (trimmed.startsWith('WEBVTT')) {
-    return parseVttTranscriptSegments(trimmed);
-  }
-
-  return [];
-}
-
-async function fetchCaptionPayload(url: string): Promise<string> {
-  const response = await fetch(url, {
-    credentials: 'omit',
-    headers: {
-      'Accept': 'application/json,text/plain,application/xml,text/xml,text/vtt,*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Caption track request failed with ${response.status}.`);
-  }
-
-  return response.text();
-}
-
-async function fetchCaptionTrackSegments(track: CaptionTrack): Promise<TranscriptSegment[]> {
-  const candidateUrls = [getCaptionTrackUrl(track), getRawCaptionTrackUrl(track)];
-  const errors: string[] = [];
-
-  for (const url of candidateUrls) {
-    try {
-      const payload = await fetchCaptionPayload(url);
-      const segments = parseCaptionPayload(payload);
-
-      if (segments.length) {
-        return segments;
-      }
-
-      errors.push(`unparseable caption payload from ${new URL(url).searchParams.get('fmt') ?? 'raw'} format`);
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : 'caption fetch failed');
-    }
-  }
-
-  throw new Error(errors.join(' | '));
-}
-
 async function fetchHtml(url: string): Promise<string> {
+  await recordTranscriptNetworkRequest('youtube-html');
   const response = await fetch(url, {
-    credentials: 'omit',
+    credentials: 'include',
     headers: {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
@@ -437,26 +183,61 @@ async function fetchHtml(url: string): Promise<string> {
     throw new Error(`HTML request failed with ${response.status}.`);
   }
 
-  return response.text();
+  const html = await response.text();
+  const normalized = html.toLowerCase();
+
+  if (
+    normalized.includes('consent.youtube.com') ||
+    normalized.includes('before you continue to youtube')
+  ) {
+    throw new CaptionFetchError('CONSENT_WALL', 'YouTube returned a consent wall instead of the watch page.');
+  }
+
+  return html;
 }
 
 async function fetchPlayerResponse(
   videoId: string,
   config: YtConfig,
+  client: 'android' | 'tv',
 ): Promise<PlayerResponse | null> {
-  if (!config.apiKey || !config.clientVersion) {
+  if (!config.apiKey) {
     return null;
   }
 
+  const clientContext =
+    client === 'android'
+      ? {
+          clientName: 'ANDROID',
+          clientVersion: '20.10.38',
+          clientNameHeader: '3',
+          userAgent: 'com.google.android.youtube/20.10.38 (Linux; U; Android 14; en_US)',
+          extraClient: {
+            androidSdkVersion: 34,
+          },
+        }
+      : {
+          clientName: 'TVHTML5',
+          clientVersion: '7.20250305.16.00',
+          clientNameHeader: '7',
+          userAgent: 'Mozilla/5.0 (SMART-TV; Linux; Tizen 7.0) AppleWebKit/537.36 (KHTML, like Gecko) TV Safari/537.36',
+          extraClient: {
+            userInterfaceTheme: 'USER_INTERFACE_THEME_LIGHT',
+          },
+        };
+
+  await recordTranscriptNetworkRequest(`youtube-player-${client}`);
   const response = await fetch(
     `https://www.youtube.com/youtubei/v1/player?key=${encodeURIComponent(config.apiKey)}`,
     {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'Origin': 'https://www.youtube.com',
-        'X-YouTube-Client-Name': config.clientNameHeader ?? '1',
-        'X-YouTube-Client-Version': config.clientVersion,
+        'User-Agent': clientContext.userAgent,
+        'X-YouTube-Client-Name': clientContext.clientNameHeader,
+        'X-YouTube-Client-Version': clientContext.clientVersion,
       },
       body: JSON.stringify({
         videoId,
@@ -469,11 +250,12 @@ async function fetchPlayerResponse(
         },
         context: {
           client: {
-            clientName: config.clientName ?? 'WEB',
-            clientVersion: config.clientVersion,
+            clientName: clientContext.clientName,
+            clientVersion: clientContext.clientVersion,
             hl: config.hl ?? 'en',
             gl: config.gl ?? 'US',
             visitorData: config.visitorData,
+            ...clientContext.extraClient,
           },
         },
       }),
@@ -484,7 +266,13 @@ async function fetchPlayerResponse(
     return null;
   }
 
-  return (await response.json()) as PlayerResponse;
+  const payload = (await response.json()) as PlayerResponse;
+
+  if (payload.videoDetails?.videoId && payload.videoDetails.videoId !== videoId) {
+    return null;
+  }
+
+  return payload;
 }
 
 function buildVideoRecord(
@@ -551,22 +339,29 @@ function resolveVideoChannel(playerResponses: Array<PlayerResponse | null>): str
 
 async function fetchTranscriptFromAttempts(
   videoId: string,
-  attempts: TranscriptAttempt[],
+  attempts: Array<() => Promise<TranscriptAttempt>>,
 ): Promise<{
   video: VideoRecord;
   transcript: TranscriptRecord;
 }> {
   const errors: string[] = [];
-  const playerResponses = attempts.map((attempt) => attempt.playerResponse);
+  const playerResponses: Array<PlayerResponse | null> = [];
 
-  for (const attempt of attempts) {
+  for (const resolveAttempt of attempts) {
+    const attempt = await resolveAttempt();
+    playerResponses.push(attempt.playerResponse);
+
     if (!attempt.track) {
       errors.push(`${attempt.source}: no caption tracks`);
       continue;
     }
 
     try {
-      const segments = await fetchCaptionTrackSegments(attempt.track);
+      const segments = await fetchSharedCaptionTrackSegments(attempt.track, {
+        credentials: 'include',
+        expectedVideoId: videoId,
+        targetLanguageCode: attempt.targetLanguageCode,
+      });
 
       if (!segments.length) {
         errors.push(`${attempt.source}: transcript segments were empty`);
@@ -588,8 +383,14 @@ async function fetchTranscriptFromAttempts(
         }),
       };
     } catch (error) {
+      const detail =
+        error instanceof CaptionFetchError
+          ? `${error.code}: ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : 'caption track fetch failed';
       errors.push(
-        `${attempt.source}: ${error instanceof Error ? error.message : 'caption track fetch failed'}`,
+        `${attempt.source}: ${detail}`,
       );
     }
   }
@@ -609,38 +410,59 @@ export async function fetchTranscriptFromYouTube(videoId: string): Promise<{
 }> {
   const watchHtml = await fetchHtml(getVideoUrl(videoId));
   const watchPlayerResponse = parsePlayerResponseFromHtml(watchHtml);
-  const watchConfig = extractYtConfig(watchHtml);
-  const endpointPlayerResponse = await fetchPlayerResponse(videoId, watchConfig);
 
-  let embedPlayerResponse: PlayerResponse | null = null;
-  try {
-    const embedHtml = await fetchHtml(getEmbedUrl(videoId));
-    embedPlayerResponse = parsePlayerResponseFromHtml(embedHtml);
-  } catch (error) {
-    console.warn('Briefly embed page transcript probe failed.', error);
+  if (
+    watchPlayerResponse?.videoDetails?.videoId &&
+    watchPlayerResponse.videoDetails.videoId !== videoId
+  ) {
+    throw new Error(
+      `Watch page player response targeted ${watchPlayerResponse.videoDetails.videoId}, not ${videoId}.`,
+    );
   }
 
+  const watchConfig = extractYtConfig(watchHtml);
+
   return fetchTranscriptFromAttempts(videoId, [
-    {
-      source: 'youtube-watch-page',
-      playerResponse: watchPlayerResponse,
-      track: selectCaptionTrack(
+    async () => {
+      const selection = resolveCaptionTrackSelection(
         watchPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks,
-      ),
+        watchPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.translationLanguages,
+      );
+
+      return {
+        source: 'youtube-watch-page',
+        playerResponse: watchPlayerResponse,
+        track: selection.track,
+        targetLanguageCode: selection.targetLanguageCode,
+      };
     },
-    {
-      source: 'youtube-player-endpoint',
-      playerResponse: endpointPlayerResponse,
-      track: selectCaptionTrack(
-        endpointPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks,
-      ),
+    async () => {
+      const androidPlayerResponse = await fetchPlayerResponse(videoId, watchConfig, 'android');
+      const selection = resolveCaptionTrackSelection(
+        androidPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks,
+        androidPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.translationLanguages,
+      );
+
+      return {
+        source: 'youtube-player-endpoint-android',
+        playerResponse: androidPlayerResponse,
+        track: selection.track,
+        targetLanguageCode: selection.targetLanguageCode,
+      };
     },
-    {
-      source: 'youtube-embed-page',
-      playerResponse: embedPlayerResponse,
-      track: selectCaptionTrack(
-        embedPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks,
-      ),
+    async () => {
+      const tvPlayerResponse = await fetchPlayerResponse(videoId, watchConfig, 'tv');
+      const selection = resolveCaptionTrackSelection(
+        tvPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks,
+        tvPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.translationLanguages,
+      );
+
+      return {
+        source: 'youtube-player-endpoint-tv',
+        playerResponse: tvPlayerResponse,
+        track: selection.track,
+        targetLanguageCode: selection.targetLanguageCode,
+      };
     },
   ]);
 }

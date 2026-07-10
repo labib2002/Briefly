@@ -28,6 +28,15 @@ const scrapedTranscriptSegmentSchema = z.object({
   start_time: z.number().nonnegative(),
   duration: z.number().nonnegative().optional(),
 });
+const transcriptSourceSchema = z.enum([
+  'youtube-active-caption-track',
+  'youtube-watch-page',
+  'youtube-player-endpoint-android',
+  'youtube-player-endpoint-tv',
+  'youtube-embed-page',
+  'youtube-dom-scrape',
+  'youtubei.js',
+]);
 
 export const ingestTranscriptRequestSchema = z.object({
   type: z.literal('briefly/ingest-transcript'),
@@ -42,6 +51,7 @@ export const generateSummaryRequestSchema = z.object({
   videoIds: z.array(z.string()).min(1),
   summaryMode: summaryModeSchema,
   provider: providerSchema.optional(),
+  tabId: z.number().int().nonnegative().optional(),
 });
 
 export const sendChatMessageRequestSchema = z.object({
@@ -50,6 +60,7 @@ export const sendChatMessageRequestSchema = z.object({
   videoIds: z.array(z.string()).min(1),
   message: z.string().min(1),
   provider: providerSchema.optional(),
+  tabId: z.number().int().nonnegative().optional(),
 });
 
 export const queueVideoRequestSchema = z.object({
@@ -92,6 +103,8 @@ export const saveScrapedTranscriptRequestSchema = z.object({
   url: z.string().url(),
   title: z.string().min(1),
   channel: z.string().min(1),
+  language: z.string().min(1).optional(),
+  source: transcriptSourceSchema.optional(),
   segments: z.array(scrapedTranscriptSegmentSchema).min(1),
 });
 

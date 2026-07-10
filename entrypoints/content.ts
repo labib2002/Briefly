@@ -2,20 +2,78 @@ import { defineContentScript } from 'wxt/sandbox';
 
 import { PREMIUM_PLACEHOLDER_URL } from '../src/constants/premium';
 import { sendRuntimeRequest } from '../src/runtime/client';
+import {
+  fetchCaptionTrackSegments,
+  isCaptionFetchError,
+  parseCaptionPayload,
+} from '../src/services/caption-payload';
+import { resolveCaptionTrackSelection } from '../src/services/caption-track-utils';
+import { appendTranscriptDebugEntry } from '../src/services/transcript-debug';
 import type { FeatureFlags } from '../src/types/domain';
 import { extractYouTubeVideoId } from '../src/utils/youtube';
 
 const STYLE_ID = 'briefly-queue-style';
 const BUTTON_SELECTOR = '[data-briefly-queue-button="true"]';
 const PLAYLIST_BUTTON_SELECTOR = '[data-briefly-playlist-button="true"]';
-const TRANSCRIPT_TRIGGER_SELECTOR = 'ytd-video-description-transcript-section-renderer button';
-const TRANSCRIPT_PANEL_SELECTORS = [
+const PLAYER_STATE_BRIDGE_EVENT = 'briefly:player-state';
+const CAPTION_CAPTURE_BRIDGE_EVENT = 'briefly:caption-response';
+const DEFAULT_TRANSCRIPT_TRIGGER_SELECTORS = [
+  'ytd-video-description-transcript-section-renderer button',
+  'ytd-video-description-transcript-section-renderer [role="button"]',
+  'ytd-watch-metadata ytd-video-description-transcript-section-renderer button',
+  'ytd-watch-metadata ytd-video-description-transcript-section-renderer [role="button"]',
+  'button[aria-label="Show transcript"]',
+  'button[aria-label*="transcript" i]',
+];
+const DEFAULT_DESCRIPTION_EXPAND_SELECTORS = [
+  'ytd-watch-metadata #description-inline-expander tp-yt-paper-button#expand',
+  'ytd-watch-metadata #description-inline-expander button#expand',
+  'ytd-watch-metadata #description-inline-expander [role="button"]#expand',
+  'ytd-watch-metadata tp-yt-paper-button#expand',
+  'ytd-watch-metadata button#expand',
+];
+const DEFAULT_TRANSCRIPT_PANEL_SELECTORS = [
   'ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"]',
   'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]',
-].join(', ');
+];
+const DEFAULT_TRANSCRIPT_RENDERER_SELECTORS = [
+  'ytd-transcript-renderer',
+  'ytd-transcript-search-panel-renderer',
+  'ytd-transcript-segment-list-renderer',
+  '#segments-container',
+];
+const DEFAULT_TRANSCRIPT_ROW_SELECTORS = [
+  'ytd-transcript-segment-renderer',
+  'transcript-segment-view-model',
+  '.ytwTranscriptSegmentViewModelHost',
+  '#segments-container > *',
+];
+const DEFAULT_TRANSCRIPT_TIMESTAMP_SELECTORS = [
+  '#start-offset',
+  '.segment-timestamp',
+  '[class*="segment-timestamp"]',
+  '[class*="cue-group-start-offset"]',
+  '.ytwTranscriptSegmentViewModelTimestamp',
+  '[class*="TranscriptSegmentViewModelTimestamp"]',
+];
+const DEFAULT_TRANSCRIPT_TEXT_SELECTORS = [
+  '#segment-text',
+  '.segment-text',
+  '[class*="segment-text"]',
+  'yt-formatted-string.segment-text',
+  'span.yt-core-attributed-string',
+  '.yt-core-attributed-string',
+];
 const THUMBNAIL_HOST_SELECTORS = 'ytd-thumbnail, yt-lockup-view-model';
 const INJECTION_SCAN_DELAY_MS = 120;
+const DEBUG_PANEL_HTML_MAX_LENGTH = 2500;
+const DEBUG_RENDERER_HTML_MAX_LENGTH = 4500;
+const DEBUG_ROW_HTML_MAX_LENGTH = 1000;
+const DEBUG_KEYWORD_NODE_LIMIT = 10;
 const queuedVideoIds = new Set<string>();
+const activeCaptionFetchInFlight = new Map<string, Promise<{ videoId: string; segmentCount: number }>>();
+const transcriptScrapeInFlight = new Map<string, Promise<{ videoId: string }>>();
+const passiveTranscriptCaptureTimestamps = new Map<string, number>();
 const defaultFeatureFlags: FeatureFlags = {
   enableThumbnailInjection: true,
   enablePlaylistIngestion: true,
@@ -25,6 +83,29 @@ const defaultFeatureFlags: FeatureFlags = {
 let premiumAccessEnabled = false;
 let clientFeatureFlags: FeatureFlags = defaultFeatureFlags;
 let scanTimeoutId: number | null = null;
+let proactiveSyncTimeoutId: number | null = null;
+let transcriptTriggerSelectors = [...DEFAULT_TRANSCRIPT_TRIGGER_SELECTORS];
+let descriptionExpandSelectors = [...DEFAULT_DESCRIPTION_EXPAND_SELECTORS];
+let transcriptPanelSelectors = [...DEFAULT_TRANSCRIPT_PANEL_SELECTORS];
+let transcriptRendererSelectors = [...DEFAULT_TRANSCRIPT_RENDERER_SELECTORS];
+let transcriptRowSelectors = [...DEFAULT_TRANSCRIPT_ROW_SELECTORS];
+let transcriptTimestampSelectors = [...DEFAULT_TRANSCRIPT_TIMESTAMP_SELECTORS];
+let transcriptTextSelectors = [...DEFAULT_TRANSCRIPT_TEXT_SELECTORS];
+let latestBridgePlayerState: {
+  url: string;
+  pageVideoId: string | null;
+  playerVideoId: string | null;
+  title: string | null;
+  channel: string | null;
+  captionTracks: Array<{
+    baseUrl?: string;
+    languageCode?: string;
+    kind?: string;
+    name?: string;
+    vssId?: string;
+  }>;
+  translationLanguageCodes: string[];
+} | null = null;
 type ThumbnailWrapper = HTMLElement & { dataset: DOMStringMap };
 type ScrapedPlaylistVideo = {
   videoId: string;
@@ -39,13 +120,89 @@ type ScrapedTranscriptSegment = {
 type QueueInjectionHost = {
   host: ThumbnailWrapper;
   anchor: HTMLAnchorElement;
+  overflowTargets: HTMLElement[];
 };
 type ContentScriptResponse<T> =
   | { ok: true; data: T }
   | { ok: false; error: string };
+type ActiveCaptionTrackRequest = {
+  type: 'briefly/fetch-active-caption-track';
+  videoId: string;
+  baseUrl: string;
+  languageCode?: string;
+  targetLanguageCode?: string;
+  title?: string;
+  channel?: string;
+};
+
+type SelectorOverrides = {
+  transcriptTriggerSelectors?: string[];
+  descriptionExpandSelectors?: string[];
+  transcriptPanelSelectors?: string[];
+  transcriptRendererSelectors?: string[];
+  transcriptRowSelectors?: string[];
+  transcriptTimestampSelectors?: string[];
+  transcriptTextSelectors?: string[];
+};
+
+function dedupeSelectors(defaults: string[], overrides: string[] | undefined): string[] {
+  return Array.from(
+    new Set([
+      ...defaults,
+      ...(overrides ?? []).map((value) => value.trim()).filter(Boolean),
+    ]),
+  );
+}
+
+function applySelectorOverrides(overrides?: SelectorOverrides) {
+  transcriptTriggerSelectors = dedupeSelectors(
+    DEFAULT_TRANSCRIPT_TRIGGER_SELECTORS,
+    overrides?.transcriptTriggerSelectors,
+  );
+  descriptionExpandSelectors = dedupeSelectors(
+    DEFAULT_DESCRIPTION_EXPAND_SELECTORS,
+    overrides?.descriptionExpandSelectors,
+  );
+  transcriptPanelSelectors = dedupeSelectors(
+    DEFAULT_TRANSCRIPT_PANEL_SELECTORS,
+    overrides?.transcriptPanelSelectors,
+  );
+  transcriptRendererSelectors = dedupeSelectors(
+    DEFAULT_TRANSCRIPT_RENDERER_SELECTORS,
+    overrides?.transcriptRendererSelectors,
+  );
+  transcriptRowSelectors = dedupeSelectors(
+    DEFAULT_TRANSCRIPT_ROW_SELECTORS,
+    overrides?.transcriptRowSelectors,
+  );
+  transcriptTimestampSelectors = dedupeSelectors(
+    DEFAULT_TRANSCRIPT_TIMESTAMP_SELECTORS,
+    overrides?.transcriptTimestampSelectors,
+  );
+  transcriptTextSelectors = dedupeSelectors(
+    DEFAULT_TRANSCRIPT_TEXT_SELECTORS,
+    overrides?.transcriptTextSelectors,
+  );
+}
+
+function getTranscriptPanelSelectorQuery() {
+  return transcriptPanelSelectors.join(', ');
+}
+
+function getTranscriptRendererSelectorQuery() {
+  return transcriptRendererSelectors.join(', ');
+}
+
+function getTranscriptRowSelectorQuery() {
+  return transcriptRowSelectors.join(', ');
+}
 
 function isSupportedPage(pathname: string): boolean {
   return pathname === '/' || pathname.startsWith('/results') || pathname.startsWith('/playlist');
+}
+
+function isWatchPage(pathname: string): boolean {
+  return pathname === '/watch';
 }
 
 function injectStyles() {
@@ -59,6 +216,7 @@ function injectStyles() {
     ytd-thumbnail.briefly-queue-wrapper,
     yt-lockup-view-model.briefly-queue-wrapper {
       position: relative !important;
+      overflow: visible !important;
     }
 
     .briefly-playlist-action-row {
@@ -135,7 +293,21 @@ function injectStyles() {
     }
   `;
 
-  document.head.append(style);
+  (document.head ?? document.documentElement).append(style);
+}
+
+function injectMainWorldBridge() {
+  const scriptId = 'briefly-youtube-bridge';
+
+  if (document.getElementById(scriptId)) {
+    return;
+  }
+
+  const script = document.createElement('script');
+  script.id = scriptId;
+  script.src = chrome.runtime.getURL('youtube-bridge.js');
+  script.async = false;
+  (document.head ?? document.documentElement).append(script);
 }
 
 function getLegacyQueueHosts(): QueueInjectionHost[] {
@@ -150,6 +322,11 @@ function getLegacyQueueHosts(): QueueInjectionHost[] {
       return {
         host,
         anchor,
+        overflowTargets: [
+          host,
+          anchor,
+          anchor.querySelector<HTMLElement>('img')?.parentElement ?? null,
+        ].filter((target): target is HTMLElement => Boolean(target)),
       } satisfies QueueInjectionHost;
     })
     .filter((host): host is QueueInjectionHost => Boolean(host));
@@ -167,6 +344,12 @@ function getModernQueueHosts(): QueueInjectionHost[] {
       return {
         host,
         anchor,
+        overflowTargets: [
+          host,
+          anchor,
+          anchor.querySelector<HTMLElement>('yt-thumbnail-view-model') ?? null,
+          anchor.querySelector<HTMLElement>('.ytThumbnailViewModelImage') ?? null,
+        ].filter((target): target is HTMLElement => Boolean(target)),
       } satisfies QueueInjectionHost;
     })
     .filter((host): host is QueueInjectionHost => Boolean(host));
@@ -285,7 +468,11 @@ function removeInjectedUI() {
 
 async function syncClientConfig() {
   try {
-    const payload = await sendRuntimeRequest<{ isPremium: boolean; featureFlags: FeatureFlags }>({
+    const payload = await sendRuntimeRequest<{
+      isPremium: boolean;
+      featureFlags: FeatureFlags;
+      selectorOverrides?: SelectorOverrides;
+    }>({
       type: 'briefly/get-client-config',
     });
     premiumAccessEnabled = payload.isPremium;
@@ -293,11 +480,13 @@ async function syncClientConfig() {
       ...defaultFeatureFlags,
       ...payload.featureFlags,
     };
+    applySelectorOverrides(payload.selectorOverrides);
     removeInjectedUI();
     updatePlaylistButtonState();
   } catch (error) {
     premiumAccessEnabled = false;
     clientFeatureFlags = defaultFeatureFlags;
+    applySelectorOverrides();
     console.warn('Briefly failed to sync client config.', error);
   }
 }
@@ -386,6 +575,9 @@ function createQueueButton(
 }
 
 function forceQueueVisibility(host: QueueInjectionHost) {
+  host.overflowTargets.forEach((target) => {
+    target.style.setProperty('overflow', 'visible', 'important');
+  });
   host.host.style.setProperty('position', 'relative', 'important');
   host.anchor.style.setProperty('position', 'relative', 'important');
 }
@@ -621,22 +813,322 @@ function getWatchPageChannel(): string {
   );
 }
 
-function getTranscriptPanel(): HTMLElement | null {
-  const panel = document.querySelector<HTMLElement>(TRANSCRIPT_PANEL_SELECTORS);
+function getTranscriptPanelCandidates(): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(getTranscriptPanelSelectorQuery()),
+  );
+}
 
-  return panel && isVisible(panel) ? panel : null;
+function getTranscriptRendererCandidates(root: ParentNode = document): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(getTranscriptRendererSelectorQuery()));
+}
+
+function getTranscriptPanel(): HTMLElement | null {
+  const panels = getTranscriptPanelCandidates();
+
+  const visiblePanel = panels.find((panel) => isVisible(panel));
+
+  if (visiblePanel) {
+    return visiblePanel;
+  }
+
+  const expandedPanel = panels.find((panel) => {
+    const visibility = panel.getAttribute('visibility') ?? '';
+    return visibility.toUpperCase().includes('EXPANDED');
+  });
+
+  if (expandedPanel) {
+    return expandedPanel;
+  }
+
+  const rowBackedPanel = panels.find((panel) =>
+    panel.querySelector('ytd-transcript-segment-renderer'),
+  );
+
+  if (rowBackedPanel) {
+    return rowBackedPanel;
+  }
+
+  const rendererBackedPanel = panels.find((panel) =>
+    panel.querySelector(getTranscriptRendererSelectorQuery()),
+  );
+
+  if (rendererBackedPanel) {
+    return rendererBackedPanel;
+  }
+
+  const documentRenderer = getTranscriptRendererCandidates()[0];
+
+  if (documentRenderer) {
+    return (
+      documentRenderer.closest<HTMLElement>('ytd-engagement-panel-section-list-renderer') ??
+      documentRenderer
+    );
+  }
+
+  return null;
 }
 
 function getTranscriptRows(): HTMLElement[] {
-  const panel = getTranscriptPanel();
+  const roots: ParentNode[] = [];
+  const transcriptPanel = getTranscriptPanel();
 
-  if (!panel) {
-    return [];
+  if (transcriptPanel) {
+    roots.push(transcriptPanel);
   }
 
-  return Array.from(panel.querySelectorAll<HTMLElement>('ytd-transcript-segment-renderer')).filter((row) =>
-    isVisible(row),
+  roots.push(...getTranscriptRendererCandidates());
+
+  if (document.body) {
+    roots.push(document.body);
+  }
+
+  const seen = new Set<HTMLElement>();
+  const rows: HTMLElement[] = [];
+
+  roots.forEach((root) => {
+    const directRows = Array.from(
+      root.querySelectorAll<HTMLElement>(getTranscriptRowSelectorQuery()),
+    );
+    const fallbackRows =
+      directRows.length > 0
+        ? []
+        : Array.from(root.querySelectorAll<HTMLElement>('#segments-container > *'));
+
+    [...directRows, ...fallbackRows].forEach((row) => {
+      if (seen.has(row)) {
+        return;
+      }
+
+      seen.add(row);
+      rows.push(row);
+    });
+  });
+
+  const visibleRows = rows.filter((row) => isVisible(row));
+
+  if (visibleRows.length) {
+    return visibleRows;
+  }
+
+  return rows.filter((row) => normalizeText(row.textContent ?? '').length > 0);
+}
+
+function getTranscriptTriggers(): HTMLElement[] {
+  const candidates = transcriptTriggerSelectors.flatMap((selector) =>
+    Array.from(document.querySelectorAll<HTMLElement>(selector)),
   );
+  const uniqueCandidates = candidates.filter(
+    (candidate, index) => candidates.indexOf(candidate) === index,
+  );
+
+  return uniqueCandidates.filter((candidate) => isVisible(candidate));
+}
+
+function getDescriptionExpandButton(): HTMLElement | null {
+  for (const selector of descriptionExpandSelectors) {
+    const candidate = document.querySelector<HTMLElement>(selector);
+
+    if (candidate && isVisible(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function truncateDebugString(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 24))}...[truncated ${value.length - maxLength + 24} chars]`;
+}
+
+function getElementHtmlSnippet(
+  element: Element | null | undefined,
+  maxLength: number,
+): string | null {
+  if (!element) {
+    return null;
+  }
+
+  return truncateDebugString(
+    element.outerHTML.replace(/\s+/g, ' ').trim(),
+    maxLength,
+  );
+}
+
+function summarizeElementsForDebug(
+  elements: Element[],
+  maxLength: number,
+  limit = DEBUG_KEYWORD_NODE_LIMIT,
+) {
+  return elements.slice(0, limit).map((element, index) => ({
+    index,
+    tagName: element.tagName.toLowerCase(),
+    id: element.id || null,
+    className:
+      element instanceof HTMLElement && typeof element.className === 'string'
+        ? element.className
+        : null,
+    visible: isVisible(element),
+    text: normalizeText(element.textContent ?? '').slice(0, 160),
+    htmlSnippet: getElementHtmlSnippet(element, maxLength),
+  }));
+}
+
+function getDebugAncestorSnippet(
+  element: Element | null | undefined,
+  selector: string,
+  maxLength: number,
+) {
+  if (!element) {
+    return null;
+  }
+
+  return getElementHtmlSnippet(element.closest(selector), maxLength);
+}
+
+function getTranscriptDebugDomSnapshot(triggerElement?: HTMLElement | null) {
+  const panels = getTranscriptPanelCandidates();
+  const selectedPanel = getTranscriptPanel();
+  const selectedPanelIndex = selectedPanel ? panels.indexOf(selectedPanel) : -1;
+  const transcriptRenderer =
+    selectedPanel?.querySelector<HTMLElement>('ytd-transcript-renderer') ??
+    getTranscriptRendererCandidates()[0] ??
+    document.querySelector<HTMLElement>('ytd-transcript-renderer');
+  const transcriptSegmentContainer =
+    selectedPanel?.querySelector<HTMLElement>(
+      'ytd-transcript-segment-list-renderer, #segments-container',
+    ) ??
+    transcriptRenderer?.querySelector<HTMLElement>(
+      'ytd-transcript-segment-list-renderer, #segments-container',
+    ) ??
+    null;
+  const rowCandidates = Array.from(
+    (
+      selectedPanel ??
+      transcriptRenderer ??
+      document
+    ).querySelectorAll<HTMLElement>(getTranscriptRowSelectorQuery()),
+  ).slice(0, 5);
+  const transcriptKeywordNodes = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      [
+        'ytd-transcript-renderer',
+        'ytd-transcript-search-panel-renderer',
+        'ytd-transcript-segment-list-renderer',
+        '#segments-container',
+        '[target-id*="transcript"]',
+        '[id*="transcript" i]',
+        '[class*="transcript" i]',
+        '[aria-label*="transcript" i]',
+      ].join(', '),
+    ),
+  );
+  const engagementPanels = Array.from(
+    document.querySelectorAll<HTMLElement>('ytd-engagement-panel-section-list-renderer'),
+  );
+  const visibleInteractiveTranscriptElements = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      'button, [role="button"], a, tp-yt-paper-button, yt-button-shape button',
+    ),
+  ).filter((element) => /transcript/i.test(element.textContent ?? element.getAttribute('aria-label') ?? ''));
+
+  return {
+    selectedTranscriptPanelIndex: selectedPanelIndex >= 0 ? selectedPanelIndex : null,
+    activeElementHtml: getElementHtmlSnippet(document.activeElement, DEBUG_ROW_HTML_MAX_LENGTH),
+    clickedTriggerHtml: getElementHtmlSnippet(triggerElement, DEBUG_ROW_HTML_MAX_LENGTH),
+    clickedTriggerAncestorHtml: getDebugAncestorSnippet(
+      triggerElement,
+      'ytd-video-description-transcript-section-renderer, ytd-watch-metadata, ytd-engagement-panel-section-list-renderer',
+      DEBUG_PANEL_HTML_MAX_LENGTH,
+    ),
+    transcriptPanelHtml: panels.map((panel, index) => ({
+      index,
+      targetId: panel.getAttribute('target-id'),
+      visibility: panel.getAttribute('visibility'),
+      visible: isVisible(panel),
+      rowCount: panel.querySelectorAll('ytd-transcript-segment-renderer').length,
+      htmlSnippet: getElementHtmlSnippet(panel, DEBUG_PANEL_HTML_MAX_LENGTH),
+    })),
+    engagementPanelCandidates: engagementPanels.slice(0, DEBUG_KEYWORD_NODE_LIMIT).map((panel, index) => ({
+      index,
+      targetId: panel.getAttribute('target-id'),
+      visibility: panel.getAttribute('visibility'),
+      visible: isVisible(panel),
+      title:
+        normalizeText(
+          panel.querySelector('#title-text')?.textContent ??
+            panel.querySelector('h2')?.textContent ??
+            '',
+        ) || null,
+      htmlSnippet: getElementHtmlSnippet(panel, DEBUG_ROW_HTML_MAX_LENGTH),
+    })),
+    transcriptRendererHtml: getElementHtmlSnippet(
+      transcriptRenderer,
+      DEBUG_RENDERER_HTML_MAX_LENGTH,
+    ),
+    transcriptSegmentContainerHtml: getElementHtmlSnippet(
+      transcriptSegmentContainer,
+      DEBUG_RENDERER_HTML_MAX_LENGTH,
+    ),
+    transcriptRendererCandidates: getTranscriptRendererCandidates().map((candidate, index) => ({
+      index,
+      tagName: candidate.tagName.toLowerCase(),
+      visible: isVisible(candidate),
+      htmlSnippet: getElementHtmlSnippet(candidate, DEBUG_ROW_HTML_MAX_LENGTH),
+    })),
+    transcriptRowSelectorCounts: {
+      legacyRows: document.querySelectorAll('ytd-transcript-segment-renderer').length,
+      modernRows: document.querySelectorAll('transcript-segment-view-model').length,
+      modernHostRows: document.querySelectorAll('.ytwTranscriptSegmentViewModelHost').length,
+      segmentsContainerChildren: document.querySelectorAll('#segments-container > *').length,
+    },
+    transcriptKeywordNodes: summarizeElementsForDebug(
+      transcriptKeywordNodes,
+      DEBUG_ROW_HTML_MAX_LENGTH,
+    ),
+    visibleTranscriptInteractions: summarizeElementsForDebug(
+      visibleInteractiveTranscriptElements,
+      DEBUG_ROW_HTML_MAX_LENGTH,
+      6,
+    ),
+    transcriptRowSamples: rowCandidates.map((row, index) => ({
+      index,
+      visible: isVisible(row),
+      text: normalizeText(row.textContent ?? ''),
+      htmlSnippet: getElementHtmlSnippet(row, DEBUG_ROW_HTML_MAX_LENGTH),
+    })),
+  };
+}
+
+function getTranscriptSurfaceSnapshot(options?: {
+  includeDomSnapshot?: boolean;
+  triggerElement?: HTMLElement | null;
+}) {
+  const panelCandidates = getTranscriptPanelCandidates().map((panel, index) => ({
+    index,
+    targetId: panel.getAttribute('target-id'),
+    visibility: panel.getAttribute('visibility'),
+    visible: isVisible(panel),
+    rowCount: panel.querySelectorAll('ytd-transcript-segment-renderer').length,
+  }));
+
+  return {
+    url: window.location.href,
+    transcriptSectionCount: document.querySelectorAll(
+      'ytd-video-description-transcript-section-renderer',
+    ).length,
+    transcriptTriggerCount: getTranscriptTriggers().length,
+    transcriptPanelCount: panelCandidates.length,
+    transcriptPanels: panelCandidates,
+    descriptionExpandCount: descriptionExpandSelectors.reduce((count, selector) => {
+      return count + document.querySelectorAll(selector).length;
+    }, 0),
+    ...(options?.includeDomSnapshot ? getTranscriptDebugDomSnapshot(options.triggerElement) : {}),
+  };
 }
 
 async function waitForTranscriptRows(timeoutMs = 6000): Promise<HTMLElement[]> {
@@ -659,9 +1151,9 @@ async function waitForTranscriptTrigger(timeoutMs = 5000): Promise<HTMLElement |
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
-    const trigger = document.querySelector<HTMLElement>(TRANSCRIPT_TRIGGER_SELECTOR);
+    const trigger = getTranscriptTriggers()[0];
 
-    if (trigger && isVisible(trigger)) {
+    if (trigger) {
       return trigger;
     }
 
@@ -671,10 +1163,52 @@ async function waitForTranscriptTrigger(timeoutMs = 5000): Promise<HTMLElement |
   return null;
 }
 
+async function expandDescriptionIfCollapsed(): Promise<boolean> {
+  const expandButton = getDescriptionExpandButton();
+
+  if (!expandButton) {
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      level: 'warn',
+      step: 'No description expand button was found before transcript trigger retry.',
+      data: getTranscriptSurfaceSnapshot(),
+    });
+    return false;
+  }
+
+  if (!clickElement(expandButton)) {
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      level: 'warn',
+      step: 'Description expand button was found but could not be clicked.',
+      data: getTranscriptSurfaceSnapshot(),
+    });
+    return false;
+  }
+
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Expanded watch-page description before transcript trigger retry.',
+    data: getTranscriptSurfaceSnapshot(),
+  });
+  await wait(400);
+  return true;
+}
+
 async function waitForTranscriptPanel(timeoutMs = 6000): Promise<HTMLElement | null> {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
+    const rows = getTranscriptRows();
+
+    if (rows.length) {
+      return (
+        getTranscriptPanel() ??
+        rows[0]?.closest<HTMLElement>('ytd-engagement-panel-section-list-renderer') ??
+        rows[0]
+      );
+    }
+
     const panel = getTranscriptPanel();
 
     if (panel) {
@@ -688,45 +1222,126 @@ async function waitForTranscriptPanel(timeoutMs = 6000): Promise<HTMLElement | n
 }
 
 async function ensureTranscriptPanelOpen(): Promise<HTMLElement[]> {
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Checking for existing transcript rows on watch page.',
+    data: {
+      url: window.location.href,
+    },
+  });
   const existingRows = await waitForTranscriptRows(500);
 
   if (existingRows.length) {
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      step: 'Transcript rows already visible.',
+      data: {
+        url: window.location.href,
+        rowCount: existingRows.length,
+      },
+    });
     return existingRows;
   }
 
-  const trigger = await waitForTranscriptTrigger();
+  let trigger = await waitForTranscriptTrigger(2500);
 
   if (!trigger) {
-    throw new Error('YouTube transcript trigger button was not found on the current watch page.');
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      level: 'warn',
+      step: 'Transcript trigger was not immediately visible. Trying description expansion.',
+      data: getTranscriptSurfaceSnapshot(),
+    });
+
+    const expanded = await expandDescriptionIfCollapsed();
+
+    if (expanded) {
+      trigger = await waitForTranscriptTrigger(3000);
+    }
+  }
+
+  if (!trigger) {
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      level: 'error',
+      step: 'Transcript trigger button was not found.',
+      data: getTranscriptSurfaceSnapshot({ includeDomSnapshot: true }),
+    });
+    throw new Error('SELECTOR_MISS: YouTube transcript trigger button was not found on the current watch page.');
   }
 
   if (!clickElement(trigger)) {
-    throw new Error('YouTube transcript trigger button could not be clicked.');
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      level: 'error',
+      step: 'Transcript trigger button could not be clicked.',
+      data: {
+        url: window.location.href,
+      },
+    });
+    throw new Error('SELECTOR_MISS: YouTube transcript trigger button could not be clicked.');
   }
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Clicked transcript trigger button.',
+    data: getTranscriptSurfaceSnapshot({
+      includeDomSnapshot: true,
+      triggerElement: trigger,
+    }),
+  });
 
   const panel = await waitForTranscriptPanel();
 
   if (!panel) {
-    throw new Error('YouTube transcript panel did not appear after clicking the transcript trigger.');
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      level: 'error',
+      step: 'Transcript panel did not appear after clicking trigger.',
+      data: getTranscriptSurfaceSnapshot({
+        includeDomSnapshot: true,
+        triggerElement: trigger,
+      }),
+    });
+    throw new Error('TRANSCRIPT_SCRAPE_EMPTY: YouTube transcript panel did not appear after clicking the transcript trigger.');
   }
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Transcript panel appeared.',
+    data: getTranscriptSurfaceSnapshot({
+      includeDomSnapshot: true,
+      triggerElement: trigger,
+    }),
+  });
 
   const rows = await waitForTranscriptRows();
 
   if (rows.length) {
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      step: 'Transcript rows loaded after opening panel.',
+      data: {
+        url: window.location.href,
+        rowCount: rows.length,
+      },
+    });
     return rows;
   }
 
-  throw new Error('Could not open the YouTube transcript panel on the current page.');
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      level: 'error',
+      step: 'Transcript panel opened but no rows were readable.',
+      data: getTranscriptSurfaceSnapshot({
+        includeDomSnapshot: true,
+        triggerElement: trigger,
+      }),
+    });
+  throw new Error('TRANSCRIPT_SCRAPE_EMPTY: Could not open the YouTube transcript panel on the current page.');
 }
 
 function extractTranscriptText(row: HTMLElement): string {
   const directText =
-    getFirstText(row, [
-      '#segment-text',
-      '.segment-text',
-      '[class*="segment-text"]',
-      'yt-formatted-string.segment-text',
-    ]) || '';
+    getFirstText(row, transcriptTextSelectors) || '';
 
   if (directText) {
     return directText;
@@ -744,13 +1359,7 @@ function extractTranscriptText(row: HTMLElement): string {
 function extractTranscriptSegments(rows: HTMLElement[]): ScrapedTranscriptSegment[] {
   const rawSegments = rows
     .map((row) => {
-      const timestampText =
-        getFirstText(row, [
-          '#start-offset',
-          '.segment-timestamp',
-          '[class*="segment-timestamp"]',
-          '[class*="cue-group-start-offset"]',
-        ]) || '';
+      const timestampText = getFirstText(row, transcriptTimestampSelectors) || '';
       const start_time = parseTimestampToSeconds(timestampText);
       const text = extractTranscriptText(row);
 
@@ -781,13 +1390,40 @@ async function scrapeActiveTranscript(): Promise<{ videoId: string }> {
     throw new Error('The current tab is not a YouTube watch page.');
   }
 
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Starting active-page transcript scrape.',
+    data: {
+      url: window.location.href,
+      videoId,
+    },
+  });
   const rows = await ensureTranscriptPanelOpen();
   const segments = extractTranscriptSegments(rows);
 
   if (!segments.length) {
-    throw new Error('Transcript panel opened, but no transcript segments were readable.');
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      level: 'error',
+      step: 'Transcript rows were found but no usable segments were extracted.',
+      data: {
+        url: window.location.href,
+        videoId,
+        rowCount: rows.length,
+      },
+    });
+    throw new Error('TRANSCRIPT_SCRAPE_EMPTY: Transcript panel opened, but no transcript segments were readable.');
   }
 
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Persisting scraped transcript from watch page.',
+    data: {
+      url: window.location.href,
+      videoId,
+      segmentCount: segments.length,
+    },
+  });
   await sendRuntimeRequest({
     type: 'briefly/save-scraped-transcript',
     videoId,
@@ -796,42 +1432,432 @@ async function scrapeActiveTranscript(): Promise<{ videoId: string }> {
     channel: getWatchPageChannel(),
     segments,
   });
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Active-page transcript scrape completed.',
+    data: {
+      url: window.location.href,
+      videoId,
+      segmentCount: segments.length,
+    },
+  });
 
   return {
     videoId,
   };
 }
 
+async function fetchActiveCaptionTrack(
+  request: ActiveCaptionTrackRequest,
+): Promise<{ videoId: string; segmentCount: number }> {
+  const pageVideoId = extractYouTubeVideoId(window.location.href);
+
+  if (!pageVideoId || pageVideoId !== request.videoId) {
+    throw new Error(
+      `Active-page caption fetch targeted ${request.videoId}, but the current page is ${pageVideoId ?? 'unknown'}.`,
+    );
+  }
+
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Starting active-page caption track fetch.',
+    data: {
+      url: window.location.href,
+      videoId: request.videoId,
+      languageCode: request.languageCode,
+      captionUrlHost: new URL(request.baseUrl).host,
+    },
+  });
+
+  const segments = await fetchCaptionTrackSegments(
+    {
+      baseUrl: request.baseUrl,
+      languageCode: request.languageCode,
+    },
+    {
+      credentials: 'include',
+      expectedVideoId: request.videoId,
+      targetLanguageCode: request.targetLanguageCode,
+    },
+  );
+
+  if (!segments.length) {
+    throw new Error('Active-page caption track fetch returned no usable segments.');
+  }
+
+  await sendRuntimeRequest({
+    type: 'briefly/save-scraped-transcript',
+    videoId: request.videoId,
+    url: window.location.href,
+    title: request.title ?? getWatchPageTitle(),
+    channel: request.channel ?? getWatchPageChannel(),
+    language: request.languageCode,
+    source: 'youtube-active-caption-track',
+    segments,
+  });
+
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Active-page caption track fetch completed.',
+    data: {
+      url: window.location.href,
+      videoId: request.videoId,
+      segmentCount: segments.length,
+      languageCode: request.languageCode,
+      targetLanguageCode: request.targetLanguageCode,
+    },
+  });
+
+  return {
+    videoId: request.videoId,
+    segmentCount: segments.length,
+  };
+}
+
+async function persistPassiveCaptionCapture(detail: {
+  url: string;
+  payload: string;
+  videoId?: string | null;
+}): Promise<void> {
+  const videoId = detail.videoId ?? extractYouTubeVideoId(detail.url);
+
+  if (!videoId) {
+    return;
+  }
+
+  const lastCapturedAt = passiveTranscriptCaptureTimestamps.get(videoId) ?? 0;
+
+  if (Date.now() - lastCapturedAt < 15_000) {
+    return;
+  }
+
+  const segments = parseCaptionPayload(detail.payload);
+
+  if (!segments.length) {
+    return;
+  }
+
+  passiveTranscriptCaptureTimestamps.set(videoId, Date.now());
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    step: 'Persisting passively intercepted caption payload from the page bridge.',
+    data: {
+      url: detail.url,
+      videoId,
+      segmentCount: segments.length,
+    },
+  });
+  await sendRuntimeRequest({
+    type: 'briefly/save-scraped-transcript',
+    videoId,
+    url: normalizeWatchUrl(videoId),
+    title: latestBridgePlayerState?.title ?? getWatchPageTitle(),
+    channel: latestBridgePlayerState?.channel ?? getWatchPageChannel(),
+    source: 'youtube-active-caption-track',
+    segments,
+  });
+}
+
+function normalizeWatchUrl(videoId: string) {
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+function scheduleProactiveSync(reason: string) {
+  if (!clientFeatureFlags.autoSyncActiveVideo || !isWatchPage(window.location.pathname)) {
+    return;
+  }
+
+  if (proactiveSyncTimeoutId !== null) {
+    window.clearTimeout(proactiveSyncTimeoutId);
+  }
+
+  proactiveSyncTimeoutId = window.setTimeout(() => {
+    proactiveSyncTimeoutId = null;
+    void runProactiveSync(reason).catch((error) => {
+      void appendTranscriptDebugEntry({
+        context: 'content',
+        level: 'warn',
+        step: 'Proactive transcript sync failed.',
+        data: {
+          url: window.location.href,
+          reason,
+          detail: error instanceof Error ? error.message : 'unknown error',
+        },
+      });
+    });
+  }, 650);
+}
+
+async function runProactiveSync(reason: string): Promise<void> {
+  const videoId = extractYouTubeVideoId(window.location.href);
+
+  if (!videoId || !clientFeatureFlags.autoSyncActiveVideo) {
+    return;
+  }
+
+  const existingFetch = activeCaptionFetchInFlight.get(videoId);
+
+  if (existingFetch) {
+    return;
+  }
+
+  const pageState = latestBridgePlayerState;
+  const selectedCaptionTrack =
+    pageState &&
+    (pageState.playerVideoId === videoId || pageState.pageVideoId === videoId)
+      ? resolveCaptionTrackSelection(
+          pageState.captionTracks,
+          pageState.translationLanguageCodes.map((languageCode) => ({ languageCode })),
+        )
+      : null;
+
+  if (selectedCaptionTrack?.track?.baseUrl) {
+    await appendTranscriptDebugEntry({
+      context: 'content',
+      step: 'Running proactive active-page caption track sync from page bridge state.',
+      data: {
+        url: window.location.href,
+        videoId,
+        reason,
+        languageCode: selectedCaptionTrack.track.languageCode,
+        targetLanguageCode: selectedCaptionTrack.targetLanguageCode,
+      },
+    });
+
+    const proactiveFetch = fetchActiveCaptionTrack({
+      type: 'briefly/fetch-active-caption-track',
+      videoId,
+      baseUrl: selectedCaptionTrack.track.baseUrl,
+      languageCode: selectedCaptionTrack.track.languageCode,
+      targetLanguageCode: selectedCaptionTrack.targetLanguageCode,
+      title: pageState?.title ?? undefined,
+      channel: pageState?.channel ?? undefined,
+    });
+
+    activeCaptionFetchInFlight.set(videoId, proactiveFetch);
+
+    await proactiveFetch.finally(() => {
+      if (activeCaptionFetchInFlight.get(videoId) === proactiveFetch) {
+        activeCaptionFetchInFlight.delete(videoId);
+      }
+    });
+
+    return;
+  }
+
+  await appendTranscriptDebugEntry({
+    context: 'content',
+    level: 'warn',
+    step: 'Falling back to runtime-driven proactive transcript sync because no bridge caption track was ready.',
+    data: {
+      url: window.location.href,
+      videoId,
+      reason,
+    },
+  });
+  await sendRuntimeRequest({
+    type: 'briefly/ingest-transcript',
+    url: window.location.href,
+  });
+}
+
 export default defineContentScript({
   matches: ['*://*.youtube.com/*'],
-  runAt: 'document_idle',
+  runAt: 'document_start',
   main() {
+    injectMainWorldBridge();
+
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      if (message?.type !== 'briefly/scrape-active-transcript') {
+      if (message?.type === 'briefly/fetch-active-caption-track') {
+        const request = message as ActiveCaptionTrackRequest;
+        const existingFetch = activeCaptionFetchInFlight.get(request.videoId);
+
+        if (existingFetch) {
+          void appendTranscriptDebugEntry({
+            context: 'content',
+            level: 'warn',
+            step: 'Joining in-flight active-page caption track fetch.',
+            data: {
+              url: window.location.href,
+              videoId: request.videoId,
+            },
+          });
+        } else {
+          void appendTranscriptDebugEntry({
+            context: 'content',
+            step: 'Received active-page caption track fetch request from extension runtime.',
+            data: {
+              url: window.location.href,
+              videoId: request.videoId,
+            },
+          });
+        }
+
+        const fetchPromise = existingFetch ?? fetchActiveCaptionTrack(request);
+
+        if (!existingFetch) {
+          activeCaptionFetchInFlight.set(request.videoId, fetchPromise);
+        }
+
+        void fetchPromise
+          .then((data) => {
+            sendResponse({
+              ok: true,
+              data,
+            } satisfies ContentScriptResponse<typeof data>);
+          })
+          .catch((error) => {
+            const detail =
+              isCaptionFetchError(error)
+                ? `${error.code}: ${error.message}`
+                : error instanceof Error
+                  ? error.message
+                  : 'Active-page caption fetch failed.';
+            void appendTranscriptDebugEntry({
+              context: 'content',
+              level: 'error',
+              step: 'Active-page caption track fetch failed.',
+              data: {
+                url: window.location.href,
+                videoId: request.videoId,
+                detail,
+              },
+            });
+            sendResponse({
+              ok: false,
+              error: detail,
+            } satisfies ContentScriptResponse<never>);
+          })
+          .finally(() => {
+            if (activeCaptionFetchInFlight.get(request.videoId) === fetchPromise) {
+              activeCaptionFetchInFlight.delete(request.videoId);
+            }
+          });
+
+        return true;
+      }
+
+      if (message?.type === 'briefly/scrape-active-transcript') {
+        void appendTranscriptDebugEntry({
+          context: 'content',
+          step: 'Received transcript scrape request from extension runtime.',
+          data: {
+            url: window.location.href,
+          },
+        });
+        const videoId = extractYouTubeVideoId(window.location.href) ?? 'unknown-video';
+        const existingScrape = transcriptScrapeInFlight.get(videoId);
+
+        if (existingScrape) {
+          void appendTranscriptDebugEntry({
+            context: 'content',
+            level: 'warn',
+            step: 'Joining in-flight transcript scrape on the current page.',
+            data: {
+              url: window.location.href,
+              videoId,
+            },
+          });
+        }
+
+        const scrapePromise = existingScrape ?? scrapeActiveTranscript();
+
+        if (!existingScrape) {
+          transcriptScrapeInFlight.set(videoId, scrapePromise);
+        }
+
+        void scrapePromise
+          .then((data) => {
+            void appendTranscriptDebugEntry({
+              context: 'content',
+              step: 'Transcript scrape request completed successfully.',
+              data: {
+                url: window.location.href,
+                videoId: data.videoId,
+              },
+            });
+            sendResponse({
+              ok: true,
+              data,
+            } satisfies ContentScriptResponse<typeof data>);
+          })
+          .catch((error) => {
+            void appendTranscriptDebugEntry({
+              context: 'content',
+              level: 'error',
+              step: 'Transcript scrape request failed.',
+              data: {
+                url: window.location.href,
+                detail: error instanceof Error ? error.message : 'Transcript scraping failed.',
+              },
+            });
+            sendResponse({
+              ok: false,
+              error: error instanceof Error ? error.message : 'Transcript scraping failed.',
+            } satisfies ContentScriptResponse<never>);
+          })
+          .finally(() => {
+            if (transcriptScrapeInFlight.get(videoId) === scrapePromise) {
+              transcriptScrapeInFlight.delete(videoId);
+            }
+          });
+
+        return true;
+      }
+
+      if (message?.type === 'briefly/proactive-sync-active-video') {
+        scheduleProactiveSync('background-web-navigation');
+        sendResponse({
+          ok: true,
+          data: {
+            scheduled: true,
+          },
+        } satisfies ContentScriptResponse<{ scheduled: true }>);
         return false;
       }
 
-      void scrapeActiveTranscript()
-        .then((data) => {
-          sendResponse({
-            ok: true,
-            data,
-          } satisfies ContentScriptResponse<typeof data>);
-        })
-        .catch((error) => {
-          sendResponse({
-            ok: false,
-            error: error instanceof Error ? error.message : 'Transcript scraping failed.',
-          } satisfies ContentScriptResponse<never>);
-        });
-
-      return true;
+      return false;
     });
 
     injectStyles();
     void syncQueueState();
     void syncClientConfig();
     scanAndInject();
+
+    window.addEventListener(PLAYER_STATE_BRIDGE_EVENT, (event) => {
+      const customEvent = event as CustomEvent<typeof latestBridgePlayerState>;
+
+      if (!customEvent.detail) {
+        return;
+      }
+
+      latestBridgePlayerState = customEvent.detail;
+      scheduleProactiveSync('player-state-bridge');
+    });
+
+    window.addEventListener(CAPTION_CAPTURE_BRIDGE_EVENT, (event) => {
+      const customEvent = event as CustomEvent<{
+        url: string;
+        payload: string;
+        videoId?: string | null;
+      }>;
+
+      if (!customEvent.detail?.payload) {
+        return;
+      }
+
+      void persistPassiveCaptionCapture(customEvent.detail).catch((error) => {
+        void appendTranscriptDebugEntry({
+          context: 'content',
+          level: 'warn',
+          step: 'Passive caption bridge payload could not be persisted.',
+          data: {
+            url: customEvent.detail.url,
+            detail: error instanceof Error ? error.message : 'unknown error',
+          },
+        });
+      });
+    });
 
     const observer = new MutationObserver((mutations) => {
       if (!mutationTouchesInjectionSurface(mutations)) {
@@ -850,6 +1876,14 @@ export default defineContentScript({
       void syncQueueState();
       void syncClientConfig();
       scheduleScan();
+      scheduleProactiveSync('yt-navigate-finish');
+    });
+
+    window.addEventListener('yt-page-data-updated', () => {
+      void syncQueueState();
+      void syncClientConfig();
+      scheduleScan();
+      scheduleProactiveSync('yt-page-data-updated');
     });
   },
 });

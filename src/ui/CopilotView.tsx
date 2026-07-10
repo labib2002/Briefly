@@ -26,6 +26,7 @@ import {
 } from '../utils/export-markdown';
 import { formatTimestamp } from '../utils/time';
 import { normalizeYouTubeUrl } from '../utils/youtube';
+import { generatePremiumAudioSummary } from '../services/premium-audio';
 import { trackEvent } from '../services/telemetry';
 
 const SUMMARY_MODES: { id: SummaryMode; label: string }[] = [
@@ -143,7 +144,7 @@ export function CopilotView() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [queueOptimisticState, setQueueOptimisticState] = useState<QueueOptimisticState>(null);
-  const [pendingAction, setPendingAction] = useState<'sync' | 'summary' | 'chat' | 'export' | null>(null);
+  const [pendingAction, setPendingAction] = useState<'sync' | 'summary' | 'chat' | 'export' | 'audio' | null>(null);
   const [upgradePrompt, setUpgradePrompt] = useState<string | null>(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [workspaceMetaDraft, setWorkspaceMetaDraft] = useState<WorkspaceMetadataDraft>({
@@ -154,6 +155,8 @@ export function CopilotView() {
   const [isSavingWorkspaceMeta, setIsSavingWorkspaceMeta] = useState(false);
   const lastSyncedUrlRef = useRef<string | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioObjectUrlRef = useRef<string | null>(null);
 
   const effectiveQueueWorkspace =
     queueWorkspace && queueOptimisticState
@@ -232,6 +235,21 @@ export function CopilotView() {
         ? `Batch Queue (${selectedVideos.length})`
         : currentVideo?.title ?? activeTab.tab?.title ?? 'Syncing video...');
 
+  const disposeAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current = null;
+    }
+
+    if (audioObjectUrlRef.current) {
+      URL.revokeObjectURL(audioObjectUrlRef.current);
+      audioObjectUrlRef.current = null;
+    }
+
+    setIsAudioPlaying(false);
+  };
+
   useEffect(() => {
     if (!canUseBatchWorkflows && workspaceView === 'queue') {
       setWorkspaceView('video');
@@ -276,7 +294,7 @@ export function CopilotView() {
 
   useEffect(() => {
     return () => {
-      window.speechSynthesis?.cancel();
+      disposeAudio();
     };
   }, []);
 
@@ -378,6 +396,7 @@ export function CopilotView() {
         workspaceId: selectedWorkspace.id,
         videoIds: selectedVideoIds,
         summaryMode,
+        tabId: activeTab.tab?.id,
       });
       setStatus(
         selectedVideoIds.length > 1
@@ -423,6 +442,7 @@ export function CopilotView() {
         workspaceId: selectedWorkspace.id,
         videoIds: selectedVideoIds,
         message: draftMessage.trim(),
+        tabId: activeTab.tab?.id,
       });
       setDraftMessage('');
       setStatus('Answer saved to the workspace.');
@@ -602,35 +622,53 @@ export function CopilotView() {
       return;
     }
 
-    if (!('speechSynthesis' in window)) {
-      setError('This browser does not support speech synthesis in the side panel.');
+    if (isAudioPlaying) {
+      disposeAudio();
+      setStatus('Audio briefing stopped.');
       return;
     }
 
-    if (window.speechSynthesis.speaking) {
-      window.speechSynthesis.cancel();
-      setIsAudioPlaying(false);
-      setStatus('Audio playback stopped.');
-      return;
+    setPendingAction('audio');
+    setError(null);
+    setStatus('Generating narrated briefing...');
+
+    try {
+      disposeAudio();
+      const audioResult = await generatePremiumAudioSummary(latestAssistantMessage.content);
+      const audio = new Audio(audioResult.objectUrl);
+
+      audioRef.current = audio;
+      audioObjectUrlRef.current = audioResult.objectUrl;
+
+      audio.addEventListener('ended', () => {
+        disposeAudio();
+        setStatus('Audio briefing finished.');
+      });
+      audio.addEventListener('error', () => {
+        disposeAudio();
+        setError('Audio playback failed.');
+      });
+
+      await audio.play();
+      setIsAudioPlaying(true);
+      setStatus(`Playing narrated briefing with OpenAI ${audioResult.voice} voice.`);
+      await trackEvent('audio_summary_played', {
+        workspaceId: selectedWorkspace?.id,
+        videoCount: selectedVideoIds.length,
+        provider: audioResult.provider,
+        model: audioResult.model,
+        voice: audioResult.voice,
+      });
+    } catch (audioError) {
+      disposeAudio();
+      setError(
+        audioError instanceof Error
+          ? audioError.message
+          : 'Failed to generate audio briefing.',
+      );
+    } finally {
+      setPendingAction(null);
     }
-
-    const utterance = new SpeechSynthesisUtterance(latestAssistantMessage.content.slice(0, 8000));
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    utterance.onend = () => setIsAudioPlaying(false);
-    utterance.onerror = () => {
-      setIsAudioPlaying(false);
-      setError('Audio playback failed.');
-    };
-
-    setIsAudioPlaying(true);
-    setStatus('Reading the latest summary aloud...');
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
-    await trackEvent('audio_summary_played', {
-      workspaceId: selectedWorkspace?.id,
-      videoCount: selectedVideoIds.length,
-    });
   };
 
   const openVideo = (videoId: string, startTime?: number) => {
@@ -784,7 +822,9 @@ export function CopilotView() {
               {canUsePremiumAudio
                 ? isAudioPlaying
                   ? 'Stop Audio'
-                  : 'Play Audio Summary'
+                  : pendingAction === 'audio'
+                    ? 'Generating Audio...'
+                    : 'Play Audio Briefing'
                 : 'Audio Summary Lock'}
             </button>
             <button

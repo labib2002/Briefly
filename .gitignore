@@ -40,3 +40,6 @@ dist/
 
 # Deprecated
 deprecated-*.py
+
+# Chrome-generated extension load artifacts
+_metadata/

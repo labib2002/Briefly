@@ -5,7 +5,7 @@ import { createId } from '../utils/id';
 import { buildChatSystemPrompt } from './ai/prompts';
 import { generateText } from './ai/router';
 import { buildTranscriptContext } from './summarization';
-import { ingestTranscriptByVideoId } from './transcript-ingestion';
+import { ensureTranscriptsForVideoIds } from './transcript-orchestrator';
 
 function createUserMessage(content: string): ChatMessage {
   return {
@@ -31,6 +31,7 @@ export async function answerWorkspaceChat(input: {
   videoIds: string[];
   message: string;
   provider?: AIProvider;
+  tabId?: number;
 }): Promise<{ workspace: WorkspaceRecord; message: ChatMessage }> {
   const workspace = await db.workspaces.get(input.workspaceId);
 
@@ -39,7 +40,10 @@ export async function answerWorkspaceChat(input: {
   }
 
   const transcripts = (
-    await Promise.all(input.videoIds.map((videoId) => ingestTranscriptByVideoId(videoId)))
+    await ensureTranscriptsForVideoIds({
+      videoIds: input.videoIds,
+      activeTabId: input.tabId,
+    })
   ).map((payload) => payload.transcript);
 
   if (!transcripts.length) {

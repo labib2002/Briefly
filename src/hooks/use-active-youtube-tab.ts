@@ -61,16 +61,26 @@ export function useActiveYouTubeTab(): ActiveYouTubeTab {
       void refresh();
     };
 
+    const handleHistoryStateUpdated = (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) => {
+      if (details.frameId === 0) {
+        void refresh();
+      }
+    };
+
     void refresh();
     chrome.tabs.onActivated.addListener(handleActivated);
     chrome.tabs.onUpdated.addListener(handleUpdated);
     chrome.windows.onFocusChanged.addListener(handleFocusChanged);
+    chrome.webNavigation?.onHistoryStateUpdated.addListener(handleHistoryStateUpdated, {
+      url: [{ hostContains: 'youtube.com' }],
+    });
 
     return () => {
       cancelled = true;
       chrome.tabs.onActivated.removeListener(handleActivated);
       chrome.tabs.onUpdated.removeListener(handleUpdated);
       chrome.windows.onFocusChanged.removeListener(handleFocusChanged);
+      chrome.webNavigation?.onHistoryStateUpdated.removeListener(handleHistoryStateUpdated);
     };
   }, []);
 

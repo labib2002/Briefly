@@ -8,6 +8,17 @@ import { SETTINGS_RECORD_ID, saveSettings } from '../db/settings';
 import { db } from '../db';
 import { signInWithGoogle, signOut, syncPremiumEntitlement } from '../services/auth';
 import { runProviderHealthCheck, type ProviderHealthResult } from '../services/provider-health';
+import {
+  clearTranscriptDebugEntries,
+  getTranscriptDebugEntries,
+  TRANSCRIPT_DEBUG_LOG_STORAGE_KEY,
+  type TranscriptDebugEntry,
+} from '../services/transcript-debug';
+import {
+  getTranscriptHealthSummary,
+  TRANSCRIPT_HEALTH_STORAGE_KEY,
+  type TranscriptHealthSummary,
+} from '../services/transcript-health';
 import type {
   AIProvider,
   CustomPromptProfile,
@@ -32,6 +43,8 @@ export function SettingsView() {
   const [isHealthCheckPending, setIsHealthCheckPending] = useState(false);
   const [healthCheckResult, setHealthCheckResult] = useState<ProviderHealthResult | null>(null);
   const [accountEmailDraft, setAccountEmailDraft] = useState('');
+  const [transcriptDebugEntries, setTranscriptDebugEntries] = useState<TranscriptDebugEntry[]>([]);
+  const [transcriptHealthSummary, setTranscriptHealthSummary] = useState<TranscriptHealthSummary | null>(null);
 
   useEffect(() => {
     if (hasSettingsLoaded(settings)) {
@@ -39,6 +52,64 @@ export function SettingsView() {
       setAccountEmailDraft(settings.user?.email ?? '');
     }
   }, [settings]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadDebugEntries = async () => {
+      const entries = await getTranscriptDebugEntries();
+
+      if (!cancelled) {
+        setTranscriptDebugEntries(entries);
+      }
+    };
+
+    const handleStorageChanged = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName === 'local' && changes[TRANSCRIPT_DEBUG_LOG_STORAGE_KEY]) {
+        void loadDebugEntries();
+      }
+    };
+
+    void loadDebugEntries();
+    chrome.storage.onChanged.addListener(handleStorageChanged);
+
+    return () => {
+      cancelled = true;
+      chrome.storage.onChanged.removeListener(handleStorageChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTranscriptHealth = async () => {
+      const summary = await getTranscriptHealthSummary();
+
+      if (!cancelled) {
+        setTranscriptHealthSummary(summary);
+      }
+    };
+
+    const handleStorageChanged = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName === 'local' && changes[TRANSCRIPT_HEALTH_STORAGE_KEY]) {
+        void loadTranscriptHealth();
+      }
+    };
+
+    void loadTranscriptHealth();
+    chrome.storage.onChanged.addListener(handleStorageChanged);
+
+    return () => {
+      cancelled = true;
+      chrome.storage.onChanged.removeListener(handleStorageChanged);
+    };
+  }, []);
 
   if (!draft) {
     return (
@@ -289,8 +360,75 @@ export function SettingsView() {
     }
   };
 
+  const handleCopyTranscriptDebugLog = async () => {
+    const content = transcriptDebugEntries
+      .map((entry) =>
+        [
+          new Date(entry.timestamp).toLocaleString(),
+          entry.level.toUpperCase(),
+          entry.context,
+          entry.step,
+          entry.data ? JSON.stringify(entry.data) : '',
+        ]
+          .filter(Boolean)
+          .join(' | '),
+      )
+      .join('\n');
+
+    await navigator.clipboard.writeText(content);
+    setStatus('Transcript debug log copied to clipboard.');
+  };
+
+  const handleClearTranscriptDebugLog = async () => {
+    await clearTranscriptDebugEntries();
+    setTranscriptDebugEntries([]);
+    setStatus('Transcript debug log cleared.');
+  };
+
   return (
     <section className="panel-stack">
+      <div className="panel-card">
+        <div className="section-header">
+          <div>
+            <h2 className="section-title">Transcript Health</h2>
+            <p className="section-copy">
+              Rolling transcript reliability and request pressure across the last 50
+              pipeline attempts and the last hour of network activity.
+            </p>
+          </div>
+          <span className="status-chip status-chip--quiet">Operational</span>
+        </div>
+
+        <div className="metric-grid">
+          <div className="metric-card">
+            <span className="metric-label">Success Rate</span>
+            <strong className="metric-value">
+              {transcriptHealthSummary?.rollingSuccessRate ?? '—'}
+              {transcriptHealthSummary?.rollingSuccessRate !== null ? '%' : ''}
+            </strong>
+            <span className="section-copy">
+              {transcriptHealthSummary?.recentAttemptCount ?? 0} recent attempts
+            </span>
+          </div>
+          <div className="metric-card">
+            <span className="metric-label">Failures</span>
+            <strong className="metric-value">
+              {transcriptHealthSummary?.recentFailureCount ?? 0}
+            </strong>
+            <span className="section-copy">Across the rolling attempt window</span>
+          </div>
+          <div className="metric-card">
+            <span className="metric-label">Requests / Hour</span>
+            <strong className="metric-value">
+              {transcriptHealthSummary?.recentRequestCountLastHour ?? 0}
+            </strong>
+            <span className="section-copy">
+              Warning threshold: {transcriptHealthSummary?.requestWarningThresholdPerHour ?? 250}
+            </span>
+          </div>
+        </div>
+      </div>
+
       <div className="panel-card">
         <div className="section-header">
           <div>
@@ -639,6 +777,71 @@ export function SettingsView() {
               </span>
             </div>
           </label>
+        </div>
+      </div>
+
+      <div className="panel-card">
+        <div className="section-header">
+          <div>
+            <h2 className="section-title">Transcript Debug Log</h2>
+            <p className="section-copy">
+              This is where transcript failures now live. It records each pipeline step:
+              cache checks, active-tab attempts, player-state reads, panel open attempts,
+              queue-runner navigation, and failure codes.
+            </p>
+          </div>
+          <span className="status-chip status-chip--quiet">
+            {transcriptDebugEntries.length} entries
+          </span>
+        </div>
+
+        <div className="hero-actions">
+          <button
+            className="queue-action-button"
+            disabled={!transcriptDebugEntries.length}
+            onClick={handleCopyTranscriptDebugLog}
+            type="button"
+          >
+            Copy Log
+          </button>
+          <button
+            className="queue-action-button"
+            disabled={!transcriptDebugEntries.length}
+            onClick={handleClearTranscriptDebugLog}
+            type="button"
+          >
+            Clear Log
+          </button>
+        </div>
+
+        <div className="debug-log-list">
+          {transcriptDebugEntries.length ? (
+            [...transcriptDebugEntries].reverse().map((entry) => (
+              <article
+                className={`debug-log-entry debug-log-entry--${entry.level}`}
+                key={entry.id}
+              >
+                <div className="debug-log-meta">
+                  <span>{new Date(entry.timestamp).toLocaleString()}</span>
+                  <span>{entry.context}</span>
+                  <span>{entry.level}</span>
+                </div>
+                <p className="debug-log-step">{entry.step}</p>
+                {entry.data ? (
+                  <pre className="debug-log-data">
+                    {JSON.stringify(entry.data, null, 2)}
+                  </pre>
+                ) : null}
+              </article>
+            ))
+          ) : (
+            <div className="empty-thread">
+              <p className="section-copy">
+                No transcript debug entries yet. Trigger a transcript sync failure and the
+                full step-by-step log will appear here.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

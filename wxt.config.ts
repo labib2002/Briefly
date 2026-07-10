@@ -7,9 +7,13 @@ export default defineConfig({
     description: 'A persistent YouTube research copilot with local memory, chat, and bring-your-own API keys.',
     permissions: [
       'activeTab',
+      'alarms',
       'scripting',
       'storage',
+      'unlimitedStorage',
       'sidePanel',
+      'tabs',
+      'webNavigation',
       'declarativeNetRequest',
       'declarativeNetRequestWithHostAccess',
     ],
@@ -37,5 +41,11 @@ export default defineConfig({
         },
       ],
     },
+    web_accessible_resources: [
+      {
+        resources: ['youtube-bridge.js'],
+        matches: ['*://*.youtube.com/*'],
+      },
+    ],
   },
 });
